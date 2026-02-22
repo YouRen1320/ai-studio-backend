@@ -31,6 +31,11 @@ export class CartService {
 
     if (!productExists) throw new BadRequestException('商品不存在');
 
+    // 检查商品是否已下架
+    if (!productExists.isActive) {
+      throw new BadRequestException('该商品已下架，无法添加到购物车');
+    }
+
     // 去数据库里找，购物车是不是已经有这个商品了
     const existingItem = await this.prisma.cartItem.findFirst({
       where: {

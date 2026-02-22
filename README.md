@@ -1750,3 +1750,433 @@ pnpm start:dev
 | `@ApiBearerAuth()`   | Controller 类   | 标记这组接口需要 Bearer Token 认证          |
 
 > 💡 **前端福利**：有了 Swagger，前端再也不用问后端"这个接口传什么参数"了。打开 `/api-docs`，所有信息一目了然，还能直接在线调试！
+
+### 十八、分页与条件查询 (Pagination)
+
+当商品只有几十个的时候，`findMany()` 一把全查出来没问题。但如果商品有 **10 万个**呢？一次性返回 10 万条数据，前端页面会直接卡死，数据库也会被压垮。
+
+**解决方案**：就像翻书一样，每次只翻一页（比如 10 条），用户要看下一页再翻。这就是**分页查询 (Pagination)**。
+
+#### 第一步：创建分页查询 DTO
+
+新建 `src/products/dto/query-product.dto.ts`：
+
+```typescript
+import { IsOptional, IsInt, Min, IsString } from 'class-validator';
+import { Type } from 'class-transformer';
+import { ApiProperty } from '@nestjs/swagger';
+
+export class QueryProductDto {
+  @ApiProperty({ description: '页码', example: 1, required: false })
+  @IsOptional()
+  @Type(() => Number) // Query 参数默认是字符串，要转成数字
+  @IsInt({ message: '页码必须是整数' })
+  @Min(1, { message: '页码最小为1' })
+  page?: number = 1;
+
+  @ApiProperty({ description: '每页数量', example: 10, required: false })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt({ message: '每页数量必须是整数' })
+  @Min(1, { message: '每页数量最小为1' })
+  limit?: number = 10;
+
+  @ApiProperty({
+    description: '搜索关键词（按商品名模糊搜索）',
+    example: 'iPhone',
+    required: false,
+  })
+  @IsOptional()
+  @IsString({ message: '关键词必须是字符串' })
+  keyword?: string;
+}
+```
+
+**关键点：**
+
+| 概念                  | 说明                                                      |
+| --------------------- | --------------------------------------------------------- |
+| `@IsOptional()`       | 这个字段是可选的，不传也没关系                            |
+| `@Type(() => Number)` | URL 查询参数都是字符串，`@Type` 自动把 `"1"` 转成数字 `1` |
+| `page = 1`            | 默认值，如果前端不传 `page`，就默认查第一页               |
+| `limit = 10`          | 默认每页 10 条                                            |
+| `keyword`             | 可选的搜索关键词，前端不传就查全部                        |
+
+> ⚠️ **重要**：`@Type` 装饰器需要在 `main.ts` 的 `ValidationPipe` 中开启 `transform: true` 才能生效：
+>
+> ```typescript
+> app.useGlobalPipes(new ValidationPipe({ whitelist: true, transform: true }));
+> ```
+
+#### 第二步：改造 Service 层
+
+```typescript
+async getAllProducts(query: QueryProductDto) {
+  const { page = 1, limit = 10, keyword } = query;
+
+  // 构建查询条件：只查在架商品 + 可选的关键词搜索
+  const where = {
+    isActive: true, // 只查在架商品（配合软删除功能）
+    ...(keyword && {
+      name: {
+        contains: keyword, // 模糊搜索
+        mode: 'insensitive' as const, // 不区分大小写
+      },
+    }),
+  };
+
+  // 同时查数据和总数（并行查询，性能更好）
+  const [items, total] = await Promise.all([
+    this.prisma.product.findMany({
+      where,
+      skip: (page - 1) * limit, // 跳过前面的记录
+      take: limit, // 只取 limit 条
+      orderBy: { createdAt: 'desc' }, // 最新的排前面
+    }),
+    this.prisma.product.count({ where }), // 查符合条件的总数
+  ]);
+
+  return {
+    items,        // 当前页的数据
+    total,        // 符合条件的总记录数
+    page,         // 当前页码
+    limit,        // 每页数量
+    totalPages: Math.ceil(total / limit), // 总页数
+  };
+}
+```
+
+**Prisma 分页核心参数：**
+
+| 参数                  | 说明                       | 示例                               |
+| --------------------- | -------------------------- | ---------------------------------- |
+| `skip`                | 跳过前面多少条记录         | 第 2 页、每页 10 条 → `skip: 10`   |
+| `take`                | 取多少条记录               | 每页 10 条 → `take: 10`            |
+| `where`               | 过滤条件                   | `{ name: { contains: 'iPhone' } }` |
+| `contains`            | 模糊搜索（包含某个字符串） | 类似 SQL 的 `LIKE '%keyword%'`     |
+| `mode: 'insensitive'` | 不区分大小写搜索           | `iphone` 和 `iPhone` 都能搜到      |
+
+#### 第三步：改造 Controller 层
+
+```typescript
+@Get()
+findAll(@Query() query: QueryProductDto) {
+  return this.productsService.getAllProducts(query);
+}
+```
+
+> 💡 `@Query()` 装饰器从 URL 的查询字符串中提取参数。比如访问 `/products?page=2&limit=5&keyword=iPhone`，NestJS 会自动把这些参数解析到 `QueryProductDto` 对象中。
+
+#### 第四步：测试
+
+```bash
+# 查第 1 页，每页 10 条（默认）
+curl http://localhost:3000/products
+
+# 查第 2 页，每页 5 条
+curl "http://localhost:3000/products?page=2&limit=5"
+
+# 搜索包含 "iPhone" 的商品，每页 3 条
+curl "http://localhost:3000/products?keyword=iPhone&limit=3"
+```
+
+**返回格式：**
+
+```json
+{
+  "code": 200,
+  "message": "请求成功",
+  "data": {
+    "items": [
+      { "id": 1, "name": "iPhone 16", "price": "5999", "isActive": true, ... }
+    ],
+    "total": 50,
+    "page": 1,
+    "limit": 10,
+    "totalPages": 5
+  }
+}
+```
+
+### 十九、软删除 (Soft Delete)
+
+在电商系统中，商品下架是家常便饭。但是你**绝对不能真的把商品从数据库里删掉**！为什么？
+
+- 用户之前下的订单里关联着这个商品（外键约束），删了商品，订单数据就"断链"了
+- 运营可能只是临时下架，过段时间还要重新上架
+- 公司需要保留历史数据做分析
+
+**软删除的思路**：不物理删除数据，而是给商品加一个"开关"（`isActive` 字段），`true` = 在架，`false` = 已下架。查询时只查 `isActive: true` 的商品。
+
+#### 第一步：修改数据库 Schema
+
+在 `schema.prisma` 的 `Product` model 中新增字段：
+
+```prisma
+model Product {
+  // ... 原有字段保持不变
+  isActive    Boolean     @default(true) // 是否上架（软删除标记）
+  // ...
+}
+```
+
+然后运行迁移：
+
+```bash
+npx prisma migrate dev --name add-product-soft-delete-and-image
+```
+
+> 💡 `@default(true)` 表示新商品默认是上架状态。已有的商品在迁移后也会自动设为 `true`。
+
+#### 第二步：下架方法（Service 层）
+
+```typescript
+// 下架商品（软删除）
+async deactivateProduct(id: number) {
+  const product = await this.prisma.product.findUnique({ where: { id } });
+
+  if (!product) throw new NotFoundException('商品不存在');
+  if (!product.isActive) return { message: '该商品已经是下架状态' };
+
+  await this.prisma.product.update({
+    where: { id },
+    data: { isActive: false }, // 只改这个标记，数据还在
+  });
+
+  return { message: `商品「${product.name}」已下架` };
+}
+```
+
+#### 第三步：下架接口（Controller 层）
+
+```typescript
+@Patch(':id/deactivate')
+deactivate(@Param('id', ParseIntPipe) id: number) {
+  return this.productsService.deactivateProduct(id);
+}
+```
+
+> 💡 为什么用 `PATCH` 而不是 `DELETE`？因为我们没有真的删除资源，只是"修改"了它的状态。`PATCH` 更符合 RESTful 语义。
+
+#### 第四步：购物车也要配合检查
+
+在 `cart.service.ts` 的 `addToCart()` 方法中，加一道检查：
+
+```typescript
+// 检查商品是否已下架
+if (!productExists.isActive) {
+  throw new BadRequestException('该商品已下架，无法添加到购物车');
+}
+```
+
+#### 第五步：查询自动过滤下架商品
+
+在第十八章中，`getAllProducts()` 的查询条件里已经加了 `isActive: true`，所以前端查商品列表时，看不到下架的商品。但订单历史中仍然能看到（因为订单关联的是商品 ID，不受 `isActive` 影响），这正是我们想要的效果。
+
+#### 测试
+
+```bash
+# 下架商品 ID=1
+curl -X PATCH http://localhost:3000/products/1/deactivate
+# 返回: { "message": "商品「iPhone 16」已下架" }
+
+# 再查商品列表，ID=1 不见了
+curl http://localhost:3000/products
+# 返回: items 中没有 ID=1 的商品
+
+# 尝试把下架商品加到购物车 → 被拒绝
+curl -X POST http://localhost:3000/cart \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{"productId": 1, "quantity": 1}'
+# 返回: { "code": 400, "message": "该商品已下架，无法添加到购物车" }
+
+# 但之前的订单仍然能正常查看
+curl http://localhost:3000/orders -H "Authorization: Bearer <token>"
+# 返回: 包含商品 ID=1 的历史订单 ✅
+```
+
+**软删除 vs 硬删除对比：**
+
+| 方式                    | 操作                       | 数据还在？ | 订单会报错？ | 能恢复？ |
+| ----------------------- | -------------------------- | ---------- | ------------ | -------- |
+| 硬删除 `delete()`       | 物理删除数据库记录         | ❌ 没了    | ❌ 外键报错  | ❌ 不能  |
+| 软删除 `isActive=false` | 改个标记，数据还在数据库里 | ✅ 还在    | ✅ 不影响    | ✅ 可以  |
+
+### 二十、文件上传 (Multer)
+
+之前商品只有名称和价格，没有图片。在真实的电商网站中，**商品图片是必不可少的**。现在我们给商品加上图片上传功能。
+
+NestJS 底层使用的是 Express，而 Express 处理文件上传用的是 **Multer** 中间件。NestJS 已经内置了对 Multer 的封装，我们只需要配置用法。
+
+#### 第一步：修改数据库 Schema
+
+在 `schema.prisma` 的 `Product` model 中新增字段：
+
+```prisma
+model Product {
+  // ... 原有字段保持不变
+  imageUrl    String?     // 商品图片地址（可选）
+  // ...
+}
+```
+
+> 💡 `imageUrl` 是可选字段（`?`），因为创建商品时可能还没有图片，后续再上传。
+
+#### 第二步：安装类型声明
+
+```bash
+pnpm add -D @types/multer
+```
+
+这会提供 `Express.Multer.File` 类型，让 TypeScript 能正确识别上传的文件对象。
+
+#### 第三步：编写上传接口（Controller）
+
+```typescript
+import { FileInterceptor } from '@nestjs/platform-express';
+import { diskStorage } from 'multer';
+import { extname } from 'path';
+
+// 上传商品图片
+@Post(':id/upload-image')
+@UseInterceptors(
+  FileInterceptor('file', {
+    storage: diskStorage({
+      destination: './uploads', // 文件存到项目根目录的 uploads 文件夹
+      filename: (req, file, cb) => {
+        // 生成唯一文件名：时间戳 + 随机数 + 原始扩展名
+        const uniqueName = `${Date.now()}-${Math.round(Math.random() * 1e9)}${extname(file.originalname)}`;
+        cb(null, uniqueName);
+      },
+    }),
+    fileFilter: (req, file, cb) => {
+      // 只允许上传图片格式
+      if (!file.mimetype.match(/\/(jpg|jpeg|png|gif|webp)$/)) {
+        cb(new Error('只允许上传图片文件！'), false);
+      } else {
+        cb(null, true);
+      }
+    },
+    limits: { fileSize: 5 * 1024 * 1024 }, // 限制最大 5MB
+  }),
+)
+async uploadImage(
+  @Param('id', ParseIntPipe) id: number,
+  @UploadedFile() file: Express.Multer.File,
+) {
+  const imageUrl = `/uploads/${file.filename}`;
+  const product = await this.productsService.updateImage(id, imageUrl);
+  return {
+    message: '图片上传成功！',
+    imageUrl: product.imageUrl,
+  };
+}
+```
+
+**关键概念：**
+
+| 概念                      | 说明                                                            |
+| ------------------------- | --------------------------------------------------------------- |
+| `FileInterceptor('file')` | 拦截表单中 `file` 字段的文件                                    |
+| `diskStorage`             | 将文件存到磁盘（还有 `memoryStorage` 存到内存，适合直传云存储） |
+| `destination`             | 文件保存的目录                                                  |
+| `filename`                | 自定义文件名规则（避免重名覆盖）                                |
+| `fileFilter`              | 过滤文件类型，只允许图片                                        |
+| `limits.fileSize`         | 限制文件大小（5MB）                                             |
+| `@UploadedFile()`         | 从请求中获取上传的文件对象                                      |
+
+#### 第四步：Service 层保存图片地址
+
+```typescript
+async updateImage(id: number, imageUrl: string) {
+  const product = await this.prisma.product.findUnique({ where: { id } });
+  if (!product) throw new NotFoundException('商品不存在');
+
+  return this.prisma.product.update({
+    where: { id },
+    data: { imageUrl }, // 把图片地址存到数据库
+  });
+}
+```
+
+#### 第五步：配置静态文件服务（main.ts）
+
+上传的文件存在了 `./uploads` 目录，但默认情况下 NestJS 不会把这个目录暴露给浏览器。我们需要配置静态文件服务：
+
+```typescript
+import { NestExpressApplication } from '@nestjs/platform-express';
+import { join } from 'path';
+
+async function bootstrap() {
+  // 注意：这里要指定泛型 <NestExpressApplication>
+  const app = await NestFactory.create<NestExpressApplication>(AppModule);
+
+  // 配置静态文件服务
+  app.useStaticAssets(join(process.cwd(), 'uploads'), {
+    prefix: '/uploads/',
+  });
+
+  // ... 其他配置
+}
+```
+
+配置完成后，上传到 `uploads/xxx.jpg` 的图片，前端就可以通过 `http://localhost:3000/uploads/xxx.jpg` 直接访问了。
+
+> ⚠️ **注意**：`NestFactory.create` 需要加泛型 `<NestExpressApplication>` 才能使用 `useStaticAssets` 方法。
+
+#### 第六步：Swagger 文档配置
+
+文件上传接口需要特殊的 Swagger 配置，因为它不是 JSON 请求体，而是 `multipart/form-data`：
+
+```typescript
+@ApiConsumes('multipart/form-data') // 告诉 Swagger 这是文件上传
+@ApiBody({
+  schema: {
+    type: 'object',
+    properties: {
+      file: { type: 'string', format: 'binary', description: '商品图片文件' },
+    },
+  },
+})
+```
+
+#### 第七步：测试
+
+```bash
+# 给商品 ID=2 上传图片
+curl -X POST http://localhost:3000/products/2/upload-image \
+  -F "file=@/path/to/your/image.jpg"
+
+# 返回:
+# {
+#   "message": "图片上传成功！",
+#   "imageUrl": "/uploads/1708901234567-123456789.jpg"
+# }
+
+# 在浏览器中直接访问图片
+# http://localhost:3000/uploads/1708901234567-123456789.jpg
+```
+
+在 Swagger UI 中测试：打开 `POST /products/{id}/upload-image`，点击 **Try it out**，会出现一个文件选择按钮，选择图片后点击 **Execute** 即可。
+
+#### 文件上传的完整流程
+
+```
+前端选择图片
+  ↓
+POST /products/:id/upload-image（FormData 格式）
+  ↓
+FileInterceptor 拦截文件
+  ├── fileFilter：检查是不是图片格式
+  ├── limits：检查是不是超过 5MB
+  └── diskStorage：存到 ./uploads 目录，生成唯一文件名
+  ↓
+Controller 拿到文件信息（file.filename）
+  ↓
+Service 把图片路径存到数据库（imageUrl）
+  ↓
+前端通过 /uploads/xxx.jpg 直接访问图片
+```
+
+> 💡 **生产环境提示**：实际项目中，图片通常不存在服务器本地，而是上传到**云存储**（如阿里云 OSS、腾讯云 COS、AWS S3），数据库只存远程 URL。本地存储仅适合学习和开发环境。
