@@ -272,8 +272,278 @@ this.prisma.product.findMany({
 
 > 💡 **记忆口诀**：增用 `create`，删用 `delete`，改用 `update`，查用 `find`。操作多条加 `Many`，条件写在 `where` 里，数据写在 `data` 里。
 
-npx prisma studio 通过网页查看数据库所存储内容
-然后我们去修改数据库蓝图，去shcema.prisma中加上购物车这张表
-加完以后，在终端输入以下命令，让数据库建立新表
+### 六、Prisma Studio —— 可视化查看数据库
+
+Prisma 自带了一个网页版数据库管理工具，可以直接在浏览器里查看和编辑数据：
+
+```bash
+npx prisma studio
+```
+
+运行后会自动打开 `http://localhost:5555`，你可以在里面看到所有表和数据，非常方便调试。
+
+### 七、购物车模块接入数据库
+
+最初购物车数据是存在本地 JSON 文件中的，后来改为使用 Prisma 操作 PostgreSQL 数据库。
+
+#### 1. 在 `schema.prisma` 中添加购物车表
+
+```prisma
+model CartItem {
+  id        Int     @id @default(autoincrement())
+  quantity  Int     // 购买数量
+  productId Int     // 外键，关联商品
+  product   Product @relation(fields: [productId], references: [id])
+}
+```
+
+同时在 `Product` 模型中添加反向关系字段：
+
+```prisma
+model Product {
+  // ... 原有字段
+  cartItems  CartItem[]  // 一个商品可以出现在多个购物车条目中
+}
+```
+
+#### 2. 执行数据库迁移
+
+```bash
 npx prisma migrate dev --name add_cart_item
-建立新表以后，输入npx prisma generate获取最新的代码提示
+```
+
+这条命令会做三件事：
+
+1. 对比 `schema.prisma` 和当前数据库的差异
+2. 生成 SQL 迁移文件（保存在 `prisma/migrations/` 目录下）
+3. 自动运行 `prisma generate` 重新生成 Prisma Client
+
+#### 3. 改造购物车 Service
+
+从文件读写改为 Prisma 数据库操作，核心变化：
+
+```typescript
+// 注入 PrismaService（不再需要 fs、path）
+constructor(private prisma: PrismaService) {}
+
+// 添加商品到购物车
+async addToCart(item: createCartDto) {
+  // 先检查商品是否存在
+  const productExists = await this.prisma.product.findUnique({
+    where: { id: item.productId },
+  });
+  if (!productExists) throw new BadRequestException('商品不存在');
+
+  // 检查购物车是否已有该商品
+  const existingItem = await this.prisma.cartItem.findFirst({
+    where: { productId: item.productId },
+  });
+
+  if (existingItem) {
+    // 有则更新数量
+    await this.prisma.cartItem.update({
+      where: { id: existingItem.id },
+      data: { quantity: existingItem.quantity + item.quantity },
+    });
+  } else {
+    // 没有则新增
+    await this.prisma.cartItem.create({
+      data: { productId: item.productId, quantity: item.quantity },
+    });
+  }
+}
+
+// 查看购物车（include 关联查询，把商品信息一起带出来）
+async getCart() {
+  const cartItems = await this.prisma.cartItem.findMany({
+    include: { product: true }, // 关键：自动 JOIN 商品表
+  });
+
+  const items = cartItems.map((item) => ({
+    cartItemId: item.id,
+    productName: item.product.name,
+    price: Number(item.product.price),
+    quantity: item.quantity,
+    subtotal: Number(item.product.price) * item.quantity,
+  }));
+
+  const total = items.reduce((sum, item) => sum + item.subtotal, 0);
+  return { items, totalPrice: total };
+}
+
+// 清空购物车
+async clearCart() {
+  await this.prisma.cartItem.deleteMany(); // 一句话清空整张表
+}
+```
+
+> 💡 **`include: { product: true }`** 是 Prisma 的关联查询，相当于 SQL 的 `JOIN`。它会自动根据 `@relation` 定义去关联 Product 表，把商品信息一起查出来。
+
+### 八、数据库表关系设计
+
+本项目涉及 4 张表，它们之间的关系如下：
+
+```
+Product（商品表）
+  │
+  ├── 1:N ──→ CartItem（购物车条目表）
+  │            一个商品可以被多个购物车条目引用
+  │
+  └── 1:N ──→ OrderItem（订单明细表）
+               一个商品可以出现在多个订单明细中
+
+Order（订单主表）
+  │
+  └── 1:N ──→ OrderItem（订单明细表）
+               一个订单包含多个订单明细
+```
+
+**关系总结：**
+
+| 关系                | 类型   | 说明                         |
+| ------------------- | ------ | ---------------------------- |
+| Product → CartItem  | 一对多 | 一个商品可以在多个购物车中   |
+| Product → OrderItem | 一对多 | 一个商品可以出现在多个订单中 |
+| Order → OrderItem   | 一对多 | 一个订单包含多个商品明细     |
+
+**为什么订单要拆成两张表？**
+
+- `Order` 只存订单级别的信息（总价、下单时间）
+- `OrderItem` 存每个商品的快照（单价、数量），**记录的是下单那一刻的价格**
+- 这样即使商品后来涨价了，历史订单里的价格不会变
+
+### 九、订单模块接入数据库
+
+#### 1. 在 `schema.prisma` 中添加订单相关表
+
+```prisma
+// 订单主表
+model Order {
+  id         Int         @id @default(autoincrement())
+  totalPrice Float       // 订单总金额
+  createdAt  DateTime    @default(now())
+  items      OrderItem[] // 一个订单包含多个明细
+}
+
+// 订单明细表
+model OrderItem {
+  id        Int     @id @default(autoincrement())
+  quantity  Int     // 买了几个
+  price     Float   // 下单那一刻的单价（历史快照）
+  orderId   Int
+  order     Order   @relation(fields: [orderId], references: [id])
+  productId Int
+  product   Product @relation(fields: [productId], references: [id])
+}
+```
+
+同时在 `Product` 模型中添加反向关系：
+
+```prisma
+model Product {
+  // ... 原有字段
+  orderItems  OrderItem[]
+}
+```
+
+#### 2. 执行数据库迁移
+
+```bash
+npx prisma migrate dev --name add_order_tables
+npx prisma generate  # 如果迁移后类型提示没更新，手动重新生成
+```
+
+> ⚠️ 如果 IDE 仍然报错找不到 `this.prisma.order`，在 VS Code 中按 `Cmd+Shift+P` → `TypeScript: Restart TS Server` 重启类型服务。
+
+#### 3. 订单 Service 核心逻辑
+
+**创建订单 —— Prisma 嵌套写入（Nested Create）：**
+
+```typescript
+async createOrder() {
+  // 1. 从数据库查出购物车全部条目（含商品信息）
+  const cartItems = await this.prisma.cartItem.findMany({
+    include: { product: true },
+  });
+  if (!cartItems) throw new BadRequestException('购物车是空的，无法下单');
+
+  // 2. 计算总价
+  const totalPrice = cartItems.reduce(
+    (sum, item) => sum + Number(item.product.price) * item.quantity, 0
+  );
+
+  // 3. 嵌套写入：同时创建 Order + OrderItem
+  const newOrder = await this.prisma.order.create({
+    data: {
+      totalPrice,
+      items: {
+        create: cartItems.map((item) => ({
+          product: { connect: { id: item.productId } }, // 关联已有商品
+          quantity: item.quantity,
+          price: Number(item.product.price),
+        })),
+      },
+    },
+  });
+
+  // 4. 清空购物车
+  await this.cartService.clearCart();
+
+  return { message: '下单成功！', orderId: newOrder.id, totalPrice: newOrder.totalPrice };
+}
+```
+
+> 💡 **`connect` vs 直接传 `productId`**：在 Prisma 的嵌套创建（nested create）中，关联已有记录必须使用 `connect: { id: xxx }` 语法，不能直接写 `productId: xxx`。`connect` 的意思是"连接到一个已经存在的记录"。
+
+**查看所有订单 —— 多级连表查询：**
+
+```typescript
+async findAll() {
+  return this.prisma.order.findMany({
+    include: {
+      items: {                    // 包含订单明细
+        include: { product: true }, // 明细里还要包含商品信息
+      },
+    },
+    orderBy: { createdAt: 'desc' }, // 最新的订单排在最前面
+  });
+}
+```
+
+> 💡 这是 **两级嵌套 include**：`Order → OrderItem → Product`，Prisma 会自动生成 JOIN 查询，一次性返回完整的订单数据。
+
+#### 4. 订单模块需要导入购物车模块
+
+因为创建订单后要清空购物车，所以 `OrdersModule` 需要导入 `CartModule`：
+
+```typescript
+@Module({
+  imports: [CartModule], // 导入购物车模块，才能使用 CartService
+  controllers: [OrdersController],
+  providers: [OrdersService],
+})
+export class OrdersModule {}
+```
+
+> 💡 前提是 `CartModule` 已经用 `exports: [CartService]` 导出了 CartService。
+
+### 十、开发流程总结
+
+每当需要新增功能模块时，按以下步骤进行：
+
+```
+1. 设计数据表  →  修改 schema.prisma
+2. 同步数据库  →  npx prisma migrate dev --name xxx
+3. 生成类型    →  npx prisma generate（迁移通常会自动执行）
+4. 创建模块    →  nest g resource 模块名
+5. 编写 DTO    →  定义数据验证规则
+6. 编写 Service →  用 this.prisma.xxx 操作数据库
+7. 编写 Controller → 定义路由，调用 Service
+8. 注册模块    →  在 app.module.ts 中 imports
+9. 测试接口    →  用 Postman / curl 测试
+10. 查看数据   →  npx prisma studio 可视化确认
+```
+
+**Prisma 工作流口诀：**
+
+> 改蓝图（schema）→ 跑迁移（migrate）→ 生类型（generate）→ 写代码（service）
