@@ -1289,3 +1289,51 @@ Interceptor 包装成功响应 → { code: 200, message: "请求成功", data: .
 ```
 
 > 💡 **前端福利**：有了统一格式后，Vue 前端可以写一个通用的 Axios 拦截器，所有接口只需要判断 `res.data.code === 200`，极大简化前端错误处理逻辑。
+
+### 十四、跨域配置 (CORS)
+
+当你的 Vue 前端（`http://localhost:5173`）要请求 NestJS 后端（`http://localhost:3000`）时，浏览器会因为**端口号不同**而拦截请求。这就是浏览器的"同源安全策略"。
+
+#### 什么是同源策略？
+
+浏览器规定：只有**协议、域名、端口号**完全一致的两个地址才算"同源"。不同源的请求会被浏览器直接拦截。
+
+| 前端地址                | 后端地址                | 是否同源    |
+| ----------------------- | ----------------------- | ----------- |
+| `http://localhost:5173` | `http://localhost:3000` | ❌ 端口不同 |
+| `http://localhost:3000` | `http://localhost:3000` | ✅ 完全一致 |
+
+#### 解决办法：一行代码开启 CORS
+
+在 `src/main.ts` 中，`app` 创建之后加一行：
+
+```typescript
+async function bootstrap() {
+  const app = await NestFactory.create(AppModule);
+
+  // 开启跨域：允许其他端口的前端访问后端接口
+  app.enableCors();
+
+  // ... 其他全局管道注册
+}
+```
+
+`app.enableCors()` 会让后端在响应头中加上 `Access-Control-Allow-Origin: *`，告诉浏览器"我允许任何来源的前端来访问我"。
+
+> ⚠️ **生产环境注意**：`enableCors()` 不传参数时默认允许所有来源访问。上线时应该指定允许的域名：
+>
+> ```typescript
+> app.enableCors({
+>   origin: 'https://your-domain.com', // 只允许你的正式域名
+> });
+> ```
+
+pnpm add @nestjs/config
+
+# 之前的数据库配置保持不变
+
+DATABASE_URL="postgresql://myuser:mypassword@localhost:5432/shopping_cart"
+
+# 【新增】JWT 秘钥配置
+
+JWT_SECRET="my-super-secret-key-123456"

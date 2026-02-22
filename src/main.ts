@@ -7,6 +7,9 @@ import { HttpExceptionFilter } from './common/filters/http-exception.filter'; //
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
 
+  // 开启跨域：允许其他端口的前端（如 Vue 的 localhost:5173）访问后端接口
+  app.enableCors();
+
   // 开启全局验证管道 app.useGlobalPipes(...) 这行的意思是设置全局关卡，项目中的所有接口都会先经过ValidationPipe的检查
   app.useGlobalPipes(
     new ValidationPipe({

@@ -7,9 +7,11 @@ import { OrdersModule } from './orders/orders.module';
 import { PrismaModule } from './prisma.module';
 import { UsersModule } from './users/users.module';
 import { AuthModule } from './auth/auth.module';
+import { ConfigModule } from '@nestjs/config';
 
 @Module({
   imports: [
+    ConfigModule.forRoot({ isGlobal: true }),
     ProductsModule,
     CartModule,
     OrdersModule,
