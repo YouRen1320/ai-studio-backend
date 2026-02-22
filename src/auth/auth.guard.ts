@@ -5,12 +5,16 @@ import {
   UnauthorizedException,
 } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
+import { ConfigService } from '@nestjs/config';
 import { Request } from 'express';
 
 @Injectable()
 export class AuthGuard implements CanActivate {
-  // 注入 JWT 服务（因为在 AuthModule 中设置了 global: true，所以这里可以直接注入）
-  constructor(private jwtService: JwtService) {}
+  // 注入 JWT 服务 和 配置服务
+  constructor(
+    private jwtService: JwtService,
+    private configService: ConfigService,
+  ) {}
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
     // 1. 从请求头中提取 Token
@@ -26,7 +30,7 @@ export class AuthGuard implements CanActivate {
     try {
       // verifyAsync 会验证签名和过期时间，验证通过后返回 payload
       const payload = await this.jwtService.verifyAsync(token, {
-        secret: 'my-super-secret-key-123456', // 必须和签发时的秘钥一致！
+        secret: this.configService.get<string>('JWT_SECRET'), // 从 .env 读取秘钥
       });
 
       // 3. 验证通过！把用户信息挂载到 request 对象上

@@ -1328,12 +1328,102 @@ async function bootstrap() {
 > });
 > ```
 
+### 十五、环境变量与秘钥安全
+
+我们之前在 `AuthModule` 和 `AuthGuard` 里，把 JWT 秘钥直接写死在了代码里。如果代码传到了公开的 GitHub 上，黑客只要看到这个秘钥，就能随意伪造 Token。
+
+**行业铁律**：所有的密码、秘钥，必须写在 `.env` 文件里，并且 `.env` 文件绝对不能上传到代码仓库（已被 `.gitignore` 排除）。
+
+#### 第一步：安装配置模块
+
+```bash
 pnpm add @nestjs/config
+```
 
+#### 第二步：配置 .env 文件
+
+```env
 # 之前的数据库配置保持不变
-
 DATABASE_URL="postgresql://myuser:mypassword@localhost:5432/shopping_cart"
 
 # 【新增】JWT 秘钥配置
-
 JWT_SECRET="my-super-secret-key-123456"
+```
+
+#### 第三步：注册 ConfigModule（`app.module.ts`）
+
+```typescript
+import { ConfigModule } from '@nestjs/config';
+
+@Module({
+  imports: [
+    ConfigModule.forRoot({ isGlobal: true }), // 全局可用，所有模块都能注入 ConfigService
+    // ... 其他模块
+  ],
+})
+export class AppModule {}
+```
+
+`isGlobal: true` 意味着不需要在每个模块里单独导入 `ConfigModule`，任何地方都能直接注入 `ConfigService`。
+
+#### 第四步：改造 AuthModule —— 秘钥从 .env 读取
+
+```typescript
+import { ConfigService } from '@nestjs/config';
+
+@Module({
+  imports: [
+    UsersModule,
+    // 改为异步注册：等 ConfigService 读取完 .env 后，再配置 JWT
+    JwtModule.registerAsync({
+      global: true,
+      inject: [ConfigService], // 注入 ConfigService
+      useFactory: (configService: ConfigService) => ({
+        secret: configService.get<string>('JWT_SECRET'), // 从 .env 读取
+        signOptions: { expiresIn: '1h' },
+      }),
+    }),
+  ],
+})
+```
+
+**为什么要用 `registerAsync` 而不是 `register`？**
+
+因为 `.env` 文件是异步加载的。如果用 `register`，代码执行时 `.env` 可能还没读完，`configService.get()` 会拿到 `undefined`。`registerAsync` + `useFactory` 会等 `ConfigService` 准备好了再执行。
+
+#### 第五步：改造 AuthGuard —— 验证 Token 时也从 .env 读秘钥
+
+```typescript
+import { ConfigService } from '@nestjs/config';
+
+@Injectable()
+export class AuthGuard implements CanActivate {
+  constructor(
+    private jwtService: JwtService,
+    private configService: ConfigService, // 注入配置服务
+  ) {}
+
+  async canActivate(context: ExecutionContext): Promise<boolean> {
+    // ...
+    const payload = await this.jwtService.verifyAsync(token, {
+      secret: this.configService.get<string>('JWT_SECRET'), // 从 .env 读取
+    });
+    // ...
+  }
+}
+```
+
+#### 改造前后对比
+
+| 位置             | 改造前                                 | 改造后                                 |
+| ---------------- | -------------------------------------- | -------------------------------------- |
+| `auth.module.ts` | `secret: 'my-super-secret-key-123456'` | `configService.get('JWT_SECRET')`      |
+| `auth.guard.ts`  | `secret: 'my-super-secret-key-123456'` | `this.configService.get('JWT_SECRET')` |
+
+> 💡 **ConfigService 常用方法**：
+>
+> ```typescript
+> configService.get<string>('JWT_SECRET'); // 读取字符串
+> configService.get<number>('PORT'); // 读取数字
+> configService.get('KEY', 'default_value'); // 读取，如果没有就用默认值
+> ```
