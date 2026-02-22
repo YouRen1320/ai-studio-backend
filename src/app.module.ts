@@ -8,10 +8,12 @@ import { PrismaModule } from './prisma.module';
 import { UsersModule } from './users/users.module';
 import { AuthModule } from './auth/auth.module';
 import { ConfigModule } from '@nestjs/config';
+import { RedisModule } from './redis.module'; // Redis 缓存模块
 
 @Module({
   imports: [
     ConfigModule.forRoot({ isGlobal: true }),
+    RedisModule, // 注册 Redis 缓存（全局可用）
     ProductsModule,
     CartModule,
     OrdersModule,

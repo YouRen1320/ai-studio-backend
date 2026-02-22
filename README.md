@@ -2162,21 +2162,139 @@ curl -X POST http://localhost:3000/products/2/upload-image \
 
 #### 文件上传的完整流程
 
-```
+````
 前端选择图片
   ↓
 POST /products/:id/upload-image（FormData 格式）
   ↓
-FileInterceptor 拦截文件
-  ├── fileFilter：检查是不是图片格式
-  ├── limits：检查是不是超过 5MB
-  └── diskStorage：存到 ./uploads 目录，生成唯一文件名
-  ↓
-Controller 拿到文件信息（file.filename）
-  ↓
-Service 把图片路径存到数据库（imageUrl）
-  ↓
-前端通过 /uploads/xxx.jpg 直接访问图片
+> 💡 **生产环境提示**：实际项目中，图片通常不存在服务器本地，而是上传到**云存储**（如阿里云 OSS、腾讯云 COS、AWS S3），数据库只存远程 URL。本地存储仅适合学习和开发环境。
+
+### 二十一、引入 Redis 缓存 (应对高并发读写)
+
+**痛点场景**：假设你的商城搞双十一，一秒钟内有 10 万人同时打开首页看商品列表（调用 `GET /products`）。如果这 10 万次请求全部打向 PostgreSQL 数据库，数据库瞬间就会 CPU 100% 宕机。
+
+**解决方案**：引入 **Redis（内存键值对数据库）**。把热门商品列表存到内存里。用户再查商品时，直接从 Redis 极速读取，速度比查 PostgreSQL 快成百上千倍。
+
+#### 1. 启动 Redis 容器
+
+在我们的 `docker-compose.yml` 中，已经添加了 Redis 服务：
+
+```yaml
+  redis:
+    image: redis:7-alpine # 轻量级 Redis 7
+    container_name: shopping-cart-redis
+    restart: always
+    ports:
+      - '6379:6379'
+    volumes:
+      - redis_data:/data
+````
+
+运行 `docker-compose up -d` 启动 Redis 容器。同时在 `.env` 中配置了连接信息：
+
+```env
+REDIS_HOST="localhost"
+REDIS_PORT=6379
 ```
 
-> 💡 **生产环境提示**：实际项目中，图片通常不存在服务器本地，而是上传到**云存储**（如阿里云 OSS、腾讯云 COS、AWS S3），数据库只存远程 URL。本地存储仅适合学习和开发环境。
+#### 2. 安装并全局配置缓存模块
+
+在 NestJS 中集成 Redis 我们使用了官方推荐的插件库：
+
+```bash
+pnpm add @nestjs/cache-manager cache-manager cache-manager-redis-yet
+```
+
+并在新建的 `src/redis.module.ts` 中进行了全局注册，这使得我们可以在项目的任意角落注入 `CACHE_MANAGER` 来操作分布式缓存：
+
+```typescript
+import { Module } from '@nestjs/common';
+import { CacheModule } from '@nestjs/cache-manager';
+import { ConfigService } from '@nestjs/config';
+import { redisStore } from 'cache-manager-redis-yet';
+
+@Module({
+  imports: [
+    CacheModule.registerAsync({
+      isGlobal: true, // 全局可用
+      inject: [ConfigService],
+      useFactory: async (configService: ConfigService) => {
+        const store = await redisStore({
+          socket: {
+            host: configService.get<string>('REDIS_HOST', 'localhost'),
+            port: configService.get<number>('REDIS_PORT', 6379),
+          },
+        });
+        return { store, ttl: 60 * 1000 }; // 默认缓存 60 秒
+      },
+    }),
+  ],
+})
+export class RedisModule {}
+```
+
+#### 3. 业务代码引入缓存与更新失效机制
+
+查询商品列表时 `getAllProducts()` 使用 Redis 的核心逻辑：
+
+1. **先查缓存**：根据分页参数生成独一无二的 Cache Key（如 `products:page=1:limit=10:keyword=`）。
+2. 如果有缓存，**直接返回内存里面的结果（极速响应）**。
+3. 如果无缓存：**查询 PostgreSQL 数据库 → 把结果存入 Redis → 返回给前端**。
+
+但是，这时候会有**缓存一致性**问题：一旦管理员在后台**上架新商品、下架商品、更新商品图片**，此时缓存还没过期（可能还要等几十秒），用户看到的商品列表就会失效。
+
+这就需要有**写操作清缓存**的应对机制：
+
+```typescript
+  // 在 ProductsService 中注入 CACHE_MANAGER
+  constructor(
+    private prisma: PrismaService,
+    @Inject(CACHE_MANAGER) private cacheManager: Cache, // 注入缓存管理器
+  ) {}
+
+  async getAllProducts(query: QueryProductDto) {
+    const { page = 1, limit = 10, keyword } = query;
+    const cacheKey = `products:page=${page}:limit=${limit}:keyword=${keyword || ''}`;
+
+    // 1. 先查 Redis 缓存
+    const cached = await this.cacheManager.get(cacheKey);
+    if (cached) return cached; // 命中缓存，直接返回！
+
+    // 2. 没命中则查数据库
+    const [items, total] = await Promise.all([ /* 数据库查询操作 */ ]);
+    const result = { items, total, page, limit, totalPages };
+
+    // 3. 把查询结果写入 Redis，保存 60 秒
+    await this.cacheManager.set(cacheKey, result, 60 * 1000);
+
+    return result;
+  }
+
+  // ==== 在数据发生更新的时候清除缓存 ====
+  private async clearProductListCache() {
+    // 找出所有商品列表相关的缓存（由于 page/limit 的不同会有多个）
+    const client = (this.cacheManager as any)?.store?.client;
+    if (client) {
+      const keys = await client.keys('products:*');
+      if (keys.length > 0) await client.del(keys); // 清空
+    }
+  }
+
+  // 上架新的商品（写操作后清除缓存）
+  async createProduct(name: string, price: number) {
+    const product = await this.prisma.product.create({ data: { name, price } });
+    await this.clearProductListCache(); // 商品数据变了，清空缓存！
+    return product;
+  }
+```
+
+#### 面试必问核心概念：缓存雪崩与缓存穿透
+
+通过这段代码你已经掌握了如何在大型应用中利用 Redis 防止数据库崩溃，但这同时也是面试必考的概念，我们可以顺便记住下面这两个名词：
+
+- 💣 **缓存雪崩 (Cache Avalanche)**：如果在你的商城中有大批量热门商品，在**这短短的一秒钟里面一起过期失效**，而这个时候正好有几万个请求发起查询，他们全部去请求数据库重新计算结果建立缓存。瞬间激增的庞大并发就会直接引发数据库的宕机，就像雪崩一样。
+  - **怎么防范**：不要让他们同一时间失效（可以给 Redis 每条缓存设置的 `TTL 过期时间` 加一个随机波动的范围差值，让失效时间错开）。
+  - **实际项目**：如果你的活动时间很长，可以设置永不失效，当管理员编辑活动页面时采用**手动覆盖失效（Cache Invalidation）**。
+
+- 👻 **缓存穿透 (Cache Penetration)**：黑客知道你有个查询接口，于是故意一直制造一个完全不存在恶意关键词（比如 `keyword=1k1hjasd713h21nj`）并疯狂发请求查询。因为这个商品不在数据库里，所以 Redis 里面当然也不会有缓存；因此黑客所有的恶意查询最后都会直击数据库，导致数据库负荷瘫痪。也就是说你的 Redis 大门被黑客当空气直接**穿过**了。
+  - **怎么防范**：把这些哪怕是查不到的结果，你也把他们存进 Redis 缓存。记录该词的值为空！这样下次同样访问不存在的关键字，你直接丢个空给黑客就可以了，免去了访问数据库。

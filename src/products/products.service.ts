@@ -1,45 +1,62 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Inject, Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from 'src/prisma.service';
 import { QueryProductDto } from './dto/query-product.dto';
+import { CACHE_MANAGER } from '@nestjs/cache-manager';
+import type { Cache } from 'cache-manager';
 
 @Injectable()
 export class ProductsService {
-  // 注入prisma
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    @Inject(CACHE_MANAGER) private cacheManager: Cache, // 注入缓存管理器
+  ) {}
 
-  // 获取商品列表（支持分页 + 关键词搜索 + 排除已下架）
+  // 获取商品列表（支持分页 + 关键词搜索 + Redis 缓存）
   async getAllProducts(query: QueryProductDto) {
     const { page = 1, limit = 10, keyword } = query;
 
-    // 构建查询条件：只查在架商品 + 可选的关键词搜索
+    // 1. 生成缓存 Key（不同的查询条件对应不同的缓存）
+    const cacheKey = `products:page=${page}:limit=${limit}:keyword=${keyword || ''}`;
+
+    // 2. 先从 Redis 缓存中查找
+    const cached = await this.cacheManager.get(cacheKey);
+    if (cached) {
+      return cached; // 🚀 命中缓存！直接返回，不查数据库
+    }
+
+    // 3. 缓存未命中，查数据库
     const where = {
-      isActive: true, // 只查在架商品
+      isActive: true,
       ...(keyword && {
         name: {
-          contains: keyword, // 模糊搜索（包含关键词）
-          mode: 'insensitive' as const, // 不区分大小写
+          contains: keyword,
+          mode: 'insensitive' as const,
         },
       }),
     };
 
-    // 同时查数据和总数（并行查询，性能更好）
     const [items, total] = await Promise.all([
       this.prisma.product.findMany({
         where,
-        skip: (page - 1) * limit, // 跳过前面的记录
-        take: limit, // 只取 limit 条
-        orderBy: { createdAt: 'desc' }, // 按创建时间倒序
+        skip: (page - 1) * limit,
+        take: limit,
+        orderBy: { createdAt: 'desc' },
       }),
-      this.prisma.product.count({ where }), // 查总数
+      this.prisma.product.count({ where }),
     ]);
 
-    return {
+    const result = {
       items,
       total,
       page,
       limit,
-      totalPages: Math.ceil(total / limit), // 总页数
+      totalPages: Math.ceil(total / limit),
     };
+
+    // 4. 把查询结果写入 Redis 缓存（TTL 60 秒）
+    await this.cacheManager.set(cacheKey, result, 60 * 1000);
+
+    return result;
   }
 
   // 根据商品id寻找某个商品
@@ -49,19 +66,20 @@ export class ProductsService {
     });
   }
 
-  // 上架新的商品
-  createProduct(name: string, price: number) {
-    return this.prisma.product.create({
-      data: {
-        name,
-        price,
-      },
+  // 上架新的商品（写操作后清除缓存）
+  async createProduct(name: string, price: number) {
+    const product = await this.prisma.product.create({
+      data: { name, price },
     });
+
+    // 商品数据变了，清除所有商品列表缓存
+    await this.clearProductListCache();
+
+    return product;
   }
 
-  // 下架商品（软删除：不物理删除数据，只把 isActive 设为 false）
+  // 下架商品（软删除 + 清缓存）
   async deactivateProduct(id: number) {
-    // 先检查商品是否存在
     const product = await this.prisma.product.findUnique({
       where: { id },
     });
@@ -79,10 +97,13 @@ export class ProductsService {
       data: { isActive: false },
     });
 
+    // 商品状态变了，清除缓存
+    await this.clearProductListCache();
+
     return { message: `商品「${product.name}」已下架` };
   }
 
-  // 更新商品图片
+  // 更新商品图片（写操作 + 清缓存）
   async updateImage(id: number, imageUrl: string) {
     const product = await this.prisma.product.findUnique({
       where: { id },
@@ -92,9 +113,29 @@ export class ProductsService {
       throw new NotFoundException('商品不存在');
     }
 
-    return this.prisma.product.update({
+    const updated = await this.prisma.product.update({
       where: { id },
       data: { imageUrl },
     });
+
+    // 商品数据变了，清除缓存
+    await this.clearProductListCache();
+
+    return updated;
+  }
+
+  // 辅助方法：清除所有商品列表缓存
+  // 使用 Redis 的 keys 命令找到所有 products: 开头的缓存并删除
+  private async clearProductListCache() {
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-explicit-any
+    const client = (this.cacheManager as any)?.store?.client;
+    if (client) {
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
+      const keys: string[] = await client.keys('products:*');
+      if (keys.length > 0) {
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
+        await client.del(keys);
+      }
+    }
   }
 }
