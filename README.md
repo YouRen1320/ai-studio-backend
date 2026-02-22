@@ -1,4 +1,4 @@
-# 🛒 购物城后端 —— 仿京东
+# 🛒 购物城后端
 
 > 使用 **NestJS + PostgreSQL + Prisma 7 + Docker** 构建的购物商城后端 API
 
