@@ -549,6 +549,7 @@ export class OrdersModule {}
 > 改蓝图（schema）→ 跑迁移（migrate）→ 生类型（generate）→ 写代码（service）
 
 <!-- 至此，基本的增删改查，连表查询，依赖注入全部掌握 -->
+
 打开 prisma/schema.prisma，我们要增加 User 表，并把它和 CartItem、Order 关联起来。
 由于我们给 CartItem 和 Order 表加上了必填的 userId，但你数据库里以前存的老数据并没有 userId，这会导致冲突。
 
@@ -568,43 +569,417 @@ nest g resource users
 打开 src/users/users.controller.ts： 开放注册接口 (UsersController)
 重启服务器 (pnpm start:dev)。完毕
 
+### 十一、用户登录 —— JWT (JSON Web Token) 认证
+
 现在，我们成功实现了用户的安全创建。但问题来了：
 用户注册了，他怎么证明自己是谁呢？ 总不能每次买东西都带上账号密码吧？
-下一关，我们要学习目前互联网最流行的认证方式：登录颁发 JWT (JSON Web Token) 与路由守卫
-什么是 JWT？(一个通俗的比喻)
+下一关，我们要学习目前互联网最流行的认证方式：**登录颁发 JWT (JSON Web Token)**
+
+#### 什么是 JWT？(一个通俗的比喻)
+
 想象你去住酒店：
 
-登录：你拿着身份证（账号密码）去前台证明你是谁。
+1. **登录**：你拿着身份证（账号密码）去前台证明你是谁。
+2. **颁发 JWT**：前台核对无误后，不会让你每次开门都出示身份证，而是给你一张**房卡 (Token)**。
+3. **携带 JWT**：这张房卡里记录了你的房间号和退房时间。接下来你在这个酒店里去健身房、吃自助餐、开房门，只需要刷这张房卡就行了。
 
-颁发 JWT：前台核对无误后，不会让你每次开门都出示身份证，而是给你一张房卡 (Token)。
+#### 第一步：准备"制卡机" (安装依赖)
 
-携带 JWT：这张房卡里记录了你的房间号和退房时间。接下来你在这个酒店里去健身房、吃自助餐、开房门，只需要刷这张房卡就行了。
-
-第一步：准备“制卡机” (安装依赖)
 我们需要让 NestJS 具备生成和解析 JWT 的能力。
-请在终端输入：pnpm add @nestjs/jwt
 
-第二步：创建“安保部” (Auth 模块)
-虽然用户相关的逻辑在 UsersModule 里，但为了让代码更规范，“登录颁发令牌”和“验证令牌”这种安保工作，通常会单独成立一个 AuthModule。
+```bash
+pnpm add @nestjs/jwt
+```
+
+#### 第二步：创建"安保部" (Auth 模块)
+
+虽然用户相关的逻辑在 UsersModule 里，但为了让代码更规范，"登录颁发令牌"和"验证令牌"这种安保工作，通常会单独成立一个 AuthModule。
+
+```bash
 nest g resource auth
+# 选择 REST API，不生成 CRUD (n)
+```
 
-第三步：给“用户部”增加一个找人的方法
+#### 第三步：给"用户部"增加一个找人的方法
+
 登录的第一步是去数据库里看这个用户存不存在。
-打开 src/users/users.service.ts，在最下面增加一个根据用户名找人的方法
-并且，我们需要允许“安保部”调用“用户部”的这个方法。
-打开 src/users/users.module.ts，把 UsersService 暴露出去
+打开 `src/users/users.service.ts`，在最下面增加一个根据用户名找人的方法：
 
-第四步：配置“安保部”的制卡机
+```typescript
+// 根据用户名查询用户
+async findOneByUsername(username: string) {
+  return this.prisma.user.findUnique({
+    where: { username },
+  });
+}
+```
+
+并且，我们需要允许"安保部"调用"用户部"的这个方法。
+打开 `src/users/users.module.ts`，把 UsersService 暴露出去：
+
+```typescript
+@Module({
+  controllers: [UsersController],
+  providers: [UsersService],
+  exports: [UsersService], // 对外开放 UsersService，让 AuthModule 可以使用
+})
+export class UsersModule {}
+```
+
+> **注意**：exports 要加在 `UsersModule` 里，而不是 `AppModule` 里！
+
+#### 第四步：配置"安保部"的制卡机
+
 我们需要在 AuthModule 里注册制卡机（JWT）。
-打开 src/auth/auth.module.ts，修改
+打开 `src/auth/auth.module.ts`：
 
-第五步：编写登录与发卡逻辑 (AuthService)
+```typescript
+import { Module } from '@nestjs/common';
+import { AuthService } from './auth.service';
+import { AuthController } from './auth.controller';
+import { UsersModule } from 'src/users/users.module'; // 1. 导入用户部
+import { JwtModule } from '@nestjs/jwt'; // 2. 导入制卡机
+
+@Module({
+  imports: [
+    UsersModule,
+    // 3. 配置 JWT (这里为了新手方便把秘钥写死了，真实项目中应该写在 .env 文件里！)
+    JwtModule.register({
+      global: true, // 全局可用
+      secret: 'my-super-secret-key-123456', // 签发房卡的防伪印章（秘钥）
+      signOptions: { expiresIn: '1h' }, // 房卡有效期 1 小时
+    }),
+  ],
+  controllers: [AuthController],
+  providers: [AuthService],
+})
+export class AuthModule {}
+```
+
+关键点：
+
+- `imports: [UsersModule]`：导入用户模块，这样 AuthService 才能注入 UsersService
+- `JwtModule.register()`：配置 JWT 的秘钥和过期时间
+- `global: true`：让 JwtService 在整个应用中都可以使用
+
+#### 第五步：编写登录与发卡逻辑 (AuthService)
+
 现在，重头戏来了。前台拿到用户的账号密码，要怎么处理？
-打开 src/auth/auth.service.ts：
+打开 `src/auth/auth.service.ts`：
 
-第六步：开放登录接口 (AuthController)
-打开 src/auth/auth.controller.ts：
+```typescript
+import { Injectable, UnauthorizedException } from '@nestjs/common';
+import { UsersService } from 'src/users/users.service';
+import { JwtService } from '@nestjs/jwt';
+import * as bcrypt from 'bcrypt';
 
-第七步：见证奇迹时刻
-确保你的服务器正在运行（如果改了 .module.ts 最好重启一下 pnpm start:dev）。
-打开浏览器控制台，我们来模拟用户登录（注意，这里的账号密码必须是你上一节课注册过的）：
+@Injectable()
+export class AuthService {
+  // 注入用户服务(用来找人) 和 JWT服务(用来发卡)
+  constructor(
+    private usersService: UsersService,
+    private jwtService: JwtService,
+  ) {}
+
+  async login(username: string, pass: string) {
+    // 1. 去数据库里找这个用户
+    const user = await this.usersService.findOneByUsername(username);
+
+    // 如果没找到用户，直接赶出去 (抛出 401 未授权异常)
+    if (!user) {
+      throw new UnauthorizedException('用户名或密码错误！');
+    }
+
+    // 2. 【核对密码】：用 bcrypt.compare 比较明文密码和数据库里的火星文密码
+    const isPasswordValid = await bcrypt.compare(pass, user.password);
+
+    if (!isPasswordValid) {
+      throw new UnauthorizedException('用户名或密码错误！');
+    }
+
+    // 3. 【制作房卡 Payload】：房卡里要写什么信息？
+    // 通常不写密码等敏感信息，只写不可变的 ID 和用户名
+    const payload = { sub: user.id, username: user.username };
+
+    // 4. 发卡 (生成 Token)
+    return {
+      message: '登录成功！',
+      access_token: await this.jwtService.signAsync(payload), // 签名并生成长字符串
+    };
+  }
+}
+```
+
+登录流程：找用户 → 核对密码 → 制作 Payload → 签发 Token
+
+#### 第六步：开放登录接口 (AuthController)
+
+打开 `src/auth/auth.controller.ts`：
+
+```typescript
+import { Body, Controller, Post } from '@nestjs/common';
+import { AuthService } from './auth.service';
+// 我们可以复用之前写的 CreateUserDto 来作为登录的数据格式
+import { CreateUserDto } from 'src/users/dto/create-user.dto';
+
+@Controller('auth')
+export class AuthController {
+  constructor(private readonly authService: AuthService) {}
+
+  @Post('login')
+  login(@Body() loginDto: CreateUserDto) {
+    return this.authService.login(loginDto.username, loginDto.password);
+  }
+}
+```
+
+接口地址：`POST /auth/login`，复用 CreateUserDto（username + password）作为请求体格式。
+
+#### 第七步：见证奇迹时刻
+
+确保你的服务器正在运行（如果改了 .module.ts 最好重启一下 `pnpm start:dev`）。
+
+用 curl 或 Postman 测试登录（注意，账号密码必须是你上一节注册过的）：
+
+```bash
+# 登录
+curl -X POST http://localhost:3000/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"username": "你注册的用户名", "password": "你注册的密码"}'
+```
+
+成功后会返回：
+
+```json
+{
+  "message": "登录成功！",
+  "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOjEsInVzZXJuYW1lIjoiemhhbmdzYW4iLCJpYXQiOjE3..."
+}
+```
+
+这个 `access_token` 就是你的"房卡"，后续的接口请求需要在请求头里携带它来证明身份。
+
+### 十二、路由守卫 (Guards) 与身份拦截
+
+现在用户已经能登录并获得 Token 了，但是问题来了：**购物车和订单接口是"裸奔"的！** 任何人都可以直接访问，甚至不需要登录。更危险的是，之前 userId 是从请求体里传的，任何人都可以伪装成别的用户。
+
+我们的目标：给购物车和订单接口加上一把"密码锁"。没有 `access_token` 的人，一律不准靠近。
+
+#### 什么是 Guard？（又一个酒店比喻）
+
+继续上面酒店的比喻：
+
+- **房卡（Token）** 已经在"登录"时发给你了
+- 现在我们需要在**每个房间门口安排一个保安（Guard）**
+- 保安的工作很简单：**"你的房卡呢？刷一下。" → "嗯，是本酒店的卡没错，请进。"**
+- 如果没有房卡，或者房卡是假的，保安就会把你挡在门外（`401 Unauthorized`）
+
+#### 第一步：设立"门禁保安" (AuthGuard)
+
+在 `src/auth` 目录下，新建 `auth.guard.ts`：
+
+```typescript
+import {
+  CanActivate,
+  ExecutionContext,
+  Injectable,
+  UnauthorizedException,
+} from '@nestjs/common';
+import { JwtService } from '@nestjs/jwt';
+import { Request } from 'express';
+
+@Injectable()
+export class AuthGuard implements CanActivate {
+  // 注入 JWT 服务（因为在 AuthModule 中设置了 global: true，所以这里可以直接注入）
+  constructor(private jwtService: JwtService) {}
+
+  async canActivate(context: ExecutionContext): Promise<boolean> {
+    // 1. 从请求头中提取 Token
+    const request = context.switchToHttp().getRequest<Request>();
+    const token = this.extractTokenFromHeader(request);
+
+    // 如果请求头里没有 Token，直接赶走
+    if (!token) {
+      throw new UnauthorizedException('你还没有登录，请先登录获取 Token！');
+    }
+
+    // 2. 验证 Token 是否合法
+    try {
+      const payload = await this.jwtService.verifyAsync(token, {
+        secret: 'my-super-secret-key-123456', // 必须和签发时的秘钥一致！
+      });
+
+      // 3. 验证通过！把用户信息挂载到 request 对象上
+      // 这样后面的 Controller 就能通过 request.user 获取到当前用户信息了
+      request['user'] = payload;
+    } catch {
+      throw new UnauthorizedException('Token 无效或已过期，请重新登录！');
+    }
+
+    // 4. 放行
+    return true;
+  }
+
+  // 辅助方法：从请求头 "Authorization: Bearer xxxxx" 中提取 Token
+  private extractTokenFromHeader(request: Request): string | undefined {
+    const [type, token] = request.headers.authorization?.split(' ') ?? [];
+    return type === 'Bearer' ? token : undefined;
+  }
+}
+```
+
+**关键点解释：**
+
+| 概念                        | 说明                                                |
+| --------------------------- | --------------------------------------------------- |
+| `CanActivate`               | NestJS 守卫的接口，必须实现 `canActivate` 方法      |
+| `ExecutionContext`          | 请求的执行上下文，可以从中获取到 Request 对象       |
+| `verifyAsync`               | 验证 Token 的签名和过期时间，返回 payload           |
+| `request['user'] = payload` | 把解析出来的用户信息挂到请求对象上，供后续使用      |
+| `extractTokenFromHeader`    | 从 `Authorization: Bearer <token>` 格式中提取 token |
+
+#### 第二步：给购物车和订单"上锁"
+
+有了保安（Guard），我们只需要把他安排到购物车和订单的门口就行了。
+
+**购物车控制器 `cart.controller.ts`：**
+
+```typescript
+import {
+  Body,
+  Controller,
+  Get,
+  Post,
+  Request,
+  UseGuards,
+} from '@nestjs/common';
+import { CartService } from './cart.service';
+import { createCartDto } from './dto/create-cart.dto';
+import { AuthGuard } from 'src/auth/auth.guard'; // 导入我们的"保安"
+
+@UseGuards(AuthGuard) // 给整个购物车控制器上锁！
+@Controller('cart')
+export class CartController {
+  constructor(private readonly cartService: CartService) {}
+
+  @Post()
+  add(@Body() body: createCartDto, @Request() req) {
+    // req.user.sub 就是从 Token 解析出的用户 ID，不再需要用户自己传 userId
+    return this.cartService.addToCart({ ...body, userId: req.user.sub });
+  }
+
+  @Get()
+  findAll(@Request() req) {
+    // 只返回当前登录用户的购物车
+    return this.cartService.getCart(req.user.sub);
+  }
+}
+```
+
+**订单控制器 `orders.controller.ts`：**
+
+```typescript
+import { Controller, Get, Post, Request, UseGuards } from '@nestjs/common';
+import { OrdersService } from './orders.service';
+import { AuthGuard } from 'src/auth/auth.guard';
+
+@UseGuards(AuthGuard) // 给整个订单控制器上锁！
+@Controller('orders')
+export class OrdersController {
+  constructor(private readonly ordersService: OrdersService) {}
+
+  @Post()
+  create(@Request() req) {
+    return this.ordersService.createOrder(req.user.sub);
+  }
+
+  @Get()
+  findAll(@Request() req) {
+    return this.ordersService.findAll(req.user.sub);
+  }
+}
+```
+
+**核心变化总结：**
+
+| 之前                      | 之后                                         |
+| ------------------------- | -------------------------------------------- |
+| 接口谁都能访问            | 必须携带有效 Token 才能访问                  |
+| `userId` 从请求体手动传入 | `userId` 从 Token 自动解析（`req.user.sub`） |
+| 所有用户共享购物车        | 每个用户只能看到自己的购物车                 |
+| 所有用户共享订单          | 每个用户只能看到自己的订单                   |
+
+> 💡 **`@UseGuards(AuthGuard)`** 可以放在类上（保护整个控制器的所有接口）或放在方法上（只保护某个接口）。
+
+#### 第三步：Service 层也要配合改造
+
+**购物车 Service** —— `getCart()` 加上 `userId` 过滤：
+
+```typescript
+async getCart(userId: number) {
+  const cartItems = await this.prisma.cartItem.findMany({
+    where: { userId }, // 只查当前用户的购物车
+    include: { product: true },
+  });
+  // ... 格式化和计算总价的逻辑不变
+}
+```
+
+**订单 Service** —— `findAll()` 加上 `userId` 过滤：
+
+```typescript
+async findAll(userId: number) {
+  return this.prisma.order.findMany({
+    where: { userId }, // 只查当前用户的订单
+    include: {
+      items: { include: { product: true } },
+    },
+    orderBy: { createdAt: 'desc' },
+  });
+}
+```
+
+#### 第四步：测试"门禁系统"
+
+重启服务器后，用 curl 测试：
+
+```bash
+# ❌ 不带 Token 访问购物车 → 被拦截
+curl http://localhost:3000/cart
+# 返回: { "message": "你还没有登录，请先登录获取 Token！", "statusCode": 401 }
+
+# ✅ 先登录获取 Token
+curl -X POST http://localhost:3000/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"username": "你的用户名", "password": "你的密码"}'
+# 返回: { "message": "登录成功！", "access_token": "eyJhbGciOi..." }
+
+# ✅ 带 Token 访问购物车
+curl http://localhost:3000/cart \
+  -H "Authorization: Bearer eyJhbGciOi..."
+# 返回: { "items": [...], "totalPrice": 0 }
+
+# ✅ 带 Token 添加商品到购物车（不需要再传 userId 了！）
+curl -X POST http://localhost:3000/cart \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer eyJhbGciOi..." \
+  -d '{"productId": 1, "quantity": 2}'
+```
+
+> 💡 **注意**：在 Postman 中测试时，在 `Headers` 选项卡中添加 `Authorization` 头，值为 `Bearer <你的token>`。
+
+#### 完整的请求流程
+
+```
+用户请求 → Guard (保安检查房卡)
+  ├── ❌ 没有 Token / Token 无效 → 返回 401
+  └── ✅ Token 验证通过
+        ↓
+      把用户信息挂到 request.user
+        ↓
+      Controller (用 req.user.sub 获取用户ID)
+        ↓
+      Service (用 userId 查询/操作数据)
+        ↓
+      返回"只属于该用户"的数据
+```

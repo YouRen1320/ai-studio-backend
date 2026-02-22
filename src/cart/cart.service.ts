@@ -23,7 +23,7 @@ export class CartService {
   // }
 
   // 2.添加数据到数据库中,item是用户传输的数据
-  async addToCart(item: createCartDto) {
+  async addToCart(item: createCartDto, userId: number) {
     // 首先检查这个商品是否存在商库中
     const productExists = await this.prisma.product.findUnique({
       where: { id: item.productId },
@@ -33,7 +33,10 @@ export class CartService {
 
     // 去数据库里找，购物车是不是已经有这个商品了
     const existingItem = await this.prisma.cartItem.findFirst({
-      where: { productId: item.productId },
+      where: {
+        productId: item.productId,
+        userId: userId, // 加上用户限制
+      },
     });
 
     if (existingItem) {
@@ -48,7 +51,7 @@ export class CartService {
         data: {
           productId: item.productId,
           quantity: item.quantity,
-          userId: item.userId,
+          userId: userId, // 【修改点】：新建记录时，打上用户的钢印
         },
       });
     }
@@ -67,10 +70,11 @@ export class CartService {
     return { message: '商品已添加到购物车！' };
   }
 
-  // 3.查看购物车
-  async getCart() {
-    // 去数据库查所有的购物车条目，并且把对应的商品信息带回来
+  // 3.查看购物车（只查当前用户的）
+  async getCart(userId: number) {
+    // 去数据库查当前用户的购物车条目，并且把对应的商品信息带回来
     const cartItems = await this.prisma.cartItem.findMany({
+      where: { userId: userId }, // 只查当前用户的购物车
       include: {
         product: true, // 立即查询
       },
@@ -118,13 +122,15 @@ export class CartService {
     // };
   }
 
-  // 4.清空购物车
-  async clearCart() {
+  // 4.清空购物车（只清当前用户的）
+  async clearCart(userId: number) {
     // this.cart = [];
     // this.saveCart();
 
     // 一句话清空整张表
-    await this.prisma.cartItem.deleteMany();
+    await this.prisma.cartItem.deleteMany({
+      where: { userId: userId }, // 【修改点】
+    });
   }
 
   // 辅助方法(读写文件)

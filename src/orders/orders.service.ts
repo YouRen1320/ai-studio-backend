@@ -48,8 +48,8 @@ export class OrdersService {
       },
     });
 
-    // 4. 订单生成成功，清空购物车表
-    await this.cartService.clearCart();
+    // 4. 订单生成成功，清空该用户的购物车
+    await this.cartService.clearCart(userId);
 
     return {
       message: '下单成功！',
@@ -88,15 +88,10 @@ export class OrdersService {
     // };
   }
 
-  // 查看所有订单
-  async findAll() {
-    // if (fs.existsSync(this.filePath)) {
-    //   return JSON.parse(fs.readFileSync(this.filePath, 'utf8')) as OrdersDto[];
-    // }
-    // return [];
-
-    // 连表查询：查处订单 -> 包含订单明细 -> 包含具体商品信息
+  // 查看当前用户的所有订单
+  async findAll(userId: number) {
     return this.prisma.order.findMany({
+      where: { userId }, // 只查当前用户的订单
       include: {
         items: {
           include: { product: true },

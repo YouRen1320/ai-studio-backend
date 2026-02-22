@@ -1,22 +1,32 @@
-import { Body, Controller, Get, Post } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  Post,
+  Request,
+  UseGuards,
+} from '@nestjs/common';
 import { CartService } from './cart.service';
 import { createCartDto } from './dto/create-cart.dto';
+import { AuthGuard } from 'src/auth/auth.guard'; // 导入我们的"保安"
 
+@UseGuards(AuthGuard) // 给整个购物车控制器上锁！所有接口都需要登录才能访问
 @Controller('cart')
 export class CartController {
   constructor(private readonly cartService: CartService) {}
 
-  // post请求，添加商品到购物车中,提交数据。告诉 Nest 这是一个用来“提交数据”的接口。
+  // post请求，添加商品到购物车中
+  // 现在 userId 不再从 body 里传，而是从 Token 中自动获取！
   @Post()
-  add(@Body() body: createCartDto) {
-    //body获取用户传输归来的请求体数据，并解析出来
-    // 这里的body就是用户传过来的请求体数据 类型是dto类型的，createCartDto
-    return this.cartService.addToCart(body);
+  add(@Body() body: createCartDto, @Request() req) {
+    // req.user 是 AuthGuard 验证通过后挂载上去的用户信息
+    // req.user.sub 就是用户ID（从 Token 的 payload 中解析出来的）
+    return this.cartService.addToCart(body, req.user.sub);
   }
 
-  // get请求，获取购物车数据
+  // get请求，获取购物车数据（只返回当前登录用户的购物车）
   @Get()
-  findAll() {
-    return this.cartService.getCart();
+  findAll(@Request() req) {
+    return this.cartService.getCart(req.user.sub);
   }
 }
