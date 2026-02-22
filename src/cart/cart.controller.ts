@@ -9,7 +9,10 @@ import {
 import { CartService } from './cart.service';
 import { createCartDto } from './dto/create-cart.dto';
 import { AuthGuard } from 'src/auth/auth.guard'; // 导入我们的"保安"
+import { ApiTags, ApiBearerAuth, ApiOperation } from '@nestjs/swagger';
 
+@ApiTags('购物车') // Swagger 分组标签
+@ApiBearerAuth() // 标记为需要 Bearer Token 认证
 @UseGuards(AuthGuard) // 给整个购物车控制器上锁！所有接口都需要登录才能访问
 @Controller('cart')
 export class CartController {
@@ -17,6 +20,7 @@ export class CartController {
 
   // post请求，添加商品到购物车中
   // 现在 userId 不再从 body 里传，而是从 Token 中自动获取！
+  @ApiOperation({ summary: '添加商品到购物车' })
   @Post()
   add(@Body() body: createCartDto, @Request() req) {
     // req.user 是 AuthGuard 验证通过后挂载上去的用户信息
@@ -25,6 +29,7 @@ export class CartController {
   }
 
   // get请求，获取购物车数据（只返回当前登录用户的购物车）
+  @ApiOperation({ summary: '查看当前用户的购物车' })
   @Get()
   findAll(@Request() req) {
     return this.cartService.getCart(req.user.sub);

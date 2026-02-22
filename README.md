@@ -1551,3 +1551,202 @@ await this.prisma.$transaction([
 | -------------- | ------------------------------ | -------------------- |
 | 交互式（回调） | 有逻辑判断、需要用前一步的结果 | 灵活，可以写 if/else |
 | 批量（数组）   | 多条独立操作，不需要互相依赖   | 简洁，但不能有逻辑   |
+
+### 十七、自动生成接口文档 (Swagger)
+
+做完了后端所有接口，终于到了一个灵魂拷问：**前端同事怎么知道你写了哪些接口？每个接口要传什么参数？返回什么数据？**
+
+传统做法是写一份 Word 或 Markdown 文档，但问题是——你改了代码，经常忘了更新文档。时间一长，文档和代码就"分家"了。
+
+**Swagger（OpenAPI）** 就是为了解决这个问题：它能**自动扫描你的代码**，生成一个漂亮的网页版接口文档，前端打开浏览器就能看，还能直接在网页上测试接口！
+
+#### 第一步：安装 Swagger 模块
+
+```bash
+pnpm add @nestjs/swagger
+```
+
+> 💡 NestJS 11 的 `@nestjs/swagger` 已经内置了 `swagger-ui-express`，不需要像老版本那样额外安装。
+
+#### 第二步：配置 Swagger（main.ts）
+
+在 `src/main.ts` 中，添加 Swagger 的配置代码：
+
+```typescript
+import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
+
+async function bootstrap() {
+  const app = await NestFactory.create(AppModule);
+
+  // ... 之前的 CORS、管道、拦截器、过滤器配置保持不变 ...
+
+  // ========== Swagger 接口文档配置 ==========
+  const config = new DocumentBuilder()
+    .setTitle('购物城 API') // 文档标题
+    .setDescription('仿京东购物城后端接口文档') // 文档描述
+    .setVersion('1.0') // 版本号
+    .addBearerAuth() // 添加 Bearer Token 认证（右上角会出现 Authorize 按钮）
+    .build();
+
+  const document = SwaggerModule.createDocument(app, config);
+  SwaggerModule.setup('api-docs', app, document); // 挂载到 /api-docs 路径
+
+  await app.listen(process.env.PORT ?? 3000);
+}
+```
+
+**关键点解释：**
+
+| 方法               | 说明                                                                                 |
+| ------------------ | ------------------------------------------------------------------------------------ |
+| `DocumentBuilder`  | 链式调用，配置文档的标题、描述、版本等元信息                                         |
+| `.addBearerAuth()` | 告诉 Swagger 这个项目使用 Bearer Token 认证，会在页面右上角显示一个 `Authorize` 按钮 |
+| `createDocument()` | 扫描所有 Controller 和 DTO，生成 OpenAPI 规范的 JSON                                 |
+| `setup()`          | 把生成的文档挂载到指定路径，启动后访问 `/api-docs` 即可看到                          |
+
+#### 第三步：给 DTO 添加描述（@ApiProperty）
+
+Swagger 需要知道每个字段的含义和示例值。我们用 `@ApiProperty()` 装饰器来告诉它：
+
+**用户 DTO（`create-user.dto.ts`）：**
+
+```typescript
+import { ApiProperty } from '@nestjs/swagger';
+
+export class CreateUserDto {
+  @ApiProperty({ description: '用户名', example: 'zhangsan', minLength: 3 })
+  @IsString()
+  @MinLength(3, { message: '用户名至少3个字符' })
+  username: string;
+
+  @ApiProperty({ description: '密码', example: '123456', minLength: 6 })
+  @IsString()
+  @MinLength(6, { message: '密码至少6个字符' })
+  password: string;
+}
+```
+
+**商品 DTO（`create-product.dto.ts`）：**
+
+```typescript
+import { ApiProperty } from '@nestjs/swagger';
+
+export class CreateProductDto {
+  @ApiProperty({ description: '商品名称', example: 'iPhone 16' })
+  @IsString({ message: '商品名称必须是字符串' })
+  @IsNotEmpty({ message: '商品名称不能为空' })
+  name: string;
+
+  @ApiProperty({ description: '商品价格', example: 5999, minimum: 0.01 })
+  @IsNumber({}, { message: '价格必须为数字' })
+  @Min(0.01, { message: '价格不能小于0.01' })
+  price: number;
+}
+```
+
+**购物车 DTO（`create-cart.dto.ts`）：**
+
+```typescript
+import { ApiProperty, ApiHideProperty } from '@nestjs/swagger';
+
+export class createCartDto {
+  @ApiHideProperty() // userId 从 Token 自动获取，不需要在文档中展示
+  @IsInt({ message: '用户id必须是整数' })
+  userId: number;
+
+  @ApiProperty({ description: '商品ID', example: 1 })
+  @IsInt({ message: '商品id必须是整数' })
+  productId: number;
+
+  @ApiProperty({ description: '购买数量', example: 2, minimum: 1 })
+  @IsInt({ message: '商品数量必须是整数' })
+  @Min(1, { message: '商品数量最小为1' })
+  quantity: number;
+}
+```
+
+> 💡 **@ApiHideProperty()**：购物车的 `userId` 现在是从 Token 自动获取的，前端不需要传。用这个装饰器可以在 Swagger 文档中隐藏这个字段，避免误导前端。
+
+**常用 @ApiProperty 参数速查：**
+
+| 参数          | 说明           | 示例                                   |
+| ------------- | -------------- | -------------------------------------- |
+| `description` | 字段的文字说明 | `'商品名称'`                           |
+| `example`     | 示例值         | `'iPhone 16'`、`5999`                  |
+| `minimum`     | 最小值         | `0.01`                                 |
+| `minLength`   | 最小长度       | `3`                                    |
+| `required`    | 是否必填       | `true`（默认就是 true）                |
+| `type`        | 字段类型       | `'string'`、`'number'`（通常自动推断） |
+
+#### 第四步：给 Controller 添加分组和说明
+
+用 `@ApiTags()` 给每个 Controller 分组，用 `@ApiOperation()` 描述每个接口的用途，需要认证的加 `@ApiBearerAuth()`：
+
+**示例——购物车控制器：**
+
+```typescript
+import { ApiTags, ApiBearerAuth, ApiOperation } from '@nestjs/swagger';
+
+@ApiTags('购物车') // 在 Swagger 页面中，这个控制器下的接口会归到"购物车"分组
+@ApiBearerAuth() // 标记这组接口需要 Bearer Token 认证
+@UseGuards(AuthGuard)
+@Controller('cart')
+export class CartController {
+  @ApiOperation({ summary: '添加商品到购物车' }) // 接口的简短说明
+  @Post()
+  add(@Body() body: createCartDto, @Request() req) { ... }
+
+  @ApiOperation({ summary: '查看当前用户的购物车' })
+  @Get()
+  findAll(@Request() req) { ... }
+}
+```
+
+**所有 Controller 的装饰器汇总：**
+
+| Controller           | @ApiTags   | @ApiBearerAuth | 方法说明                                |
+| -------------------- | ---------- | -------------- | --------------------------------------- |
+| `ProductsController` | `'商品'`   | ❌ 不需要      | 获取所有商品列表 / 上架新商品           |
+| `CartController`     | `'购物车'` | ✅ 需要        | 添加商品到购物车 / 查看当前用户的购物车 |
+| `OrdersController`   | `'订单'`   | ✅ 需要        | 提交订单（购物车结算） / 查看历史订单   |
+| `UsersController`    | `'用户'`   | ❌ 不需要      | 用户注册                                |
+| `AuthController`     | `'认证'`   | ❌ 不需要      | 用户登录（获取 Token）                  |
+
+> 💡 **规律**：不需要登录就能访问的接口（注册、登录、查商品），不加 `@ApiBearerAuth()`。需要登录的接口（购物车、订单），必须加。
+
+#### 第五步：启动服务，访问文档
+
+```bash
+pnpm start:dev
+```
+
+打开浏览器，访问 **http://localhost:3000/api-docs**，你会看到一个漂亮的接口文档页面！
+
+页面上会展示：
+
+- 所有接口按 `@ApiTags` 分好了组（商品、购物车、订单、用户、认证）
+- 每个接口都有 `@ApiOperation` 写的简短说明
+- 点开某个接口，能看到请求参数的详细描述（来自 `@ApiProperty`）
+- 右上角有一个绿色的 **Authorize** 按钮（来自 `.addBearerAuth()`）
+
+#### 第六步：在 Swagger UI 中测试需要 Token 的接口
+
+1. 先展开 **认证** 分组，点击 **POST /auth/login**
+2. 点击 **Try it out**，填入用户名和密码，点击 **Execute**
+3. 从返回结果中复制 `access_token` 的值
+4. 点击页面右上角的 **Authorize** 按钮
+5. 在弹出框中输入 `Bearer 你复制的token`（注意 Bearer 和 token 之间有空格）
+6. 点击 **Authorize** 确认
+7. 现在你就可以直接测试购物车和订单接口了！Swagger 会自动在请求头中携带 Token
+
+#### 完整的装饰器速查表
+
+| 装饰器               | 用在哪里        | 作用                                        |
+| -------------------- | --------------- | ------------------------------------------- |
+| `@ApiTags()`         | Controller 类   | 给接口分组，方便前端按模块查看              |
+| `@ApiOperation()`    | Controller 方法 | 给单个接口写简短说明                        |
+| `@ApiProperty()`     | DTO 字段        | 描述请求体中每个字段的含义、类型、示例值    |
+| `@ApiHideProperty()` | DTO 字段        | 在文档中隐藏某个字段（如自动获取的 userId） |
+| `@ApiBearerAuth()`   | Controller 类   | 标记这组接口需要 Bearer Token 认证          |
+
+> 💡 **前端福利**：有了 Swagger，前端再也不用问后端"这个接口传什么参数"了。打开 `/api-docs`，所有信息一目了然，还能直接在线调试！
