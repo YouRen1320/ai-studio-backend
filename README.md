@@ -1427,3 +1427,127 @@ export class AuthGuard implements CanActivate {
 > configService.get<number>('PORT'); // 读取数字
 > configService.get('KEY', 'default_value'); // 读取，如果没有就用默认值
 > ```
+
+### 十六、数据库事务 (Transaction)
+
+#### 为什么需要事务？（灾难场景重现）
+
+看看改造前的下单逻辑：
+
+1. 算好总价，创建订单（写入 Order 表） ✅
+2. 调用 `clearCart()` 清空购物车（删除 CartItem 表的数据） ❌ 突然断网了！
+
+**结果**：用户的钱扣了（订单生成了），但购物车里的东西还在！用户一刷新，又点了一次结账，系统又生成了一个重复订单。这就是灾难。
+
+**事务 (Transaction)** 能把多步操作"绑定"在一起：**要么全成功，要么全失败（回滚 Rollback）**。哪怕第 2 步报错了，数据库也会自动把第 1 步的订单撤销掉，当做什么都没发生过。这就是数据库的 **ACID 特性**。
+
+#### 第一步：改造下单逻辑，引入 `$transaction`
+
+在 Prisma 中，处理事务用 `$transaction` 方法。打开 `src/orders/orders.service.ts`：
+
+```typescript
+import { BadRequestException, Injectable } from '@nestjs/common';
+import { PrismaService } from 'src/prisma.service';
+
+@Injectable()
+export class OrdersService {
+  constructor(private readonly prisma: PrismaService) {}
+
+  async createOrder(userId: number) {
+    // 1. 先查购物车（只读操作，放在事务外没问题）
+    const cartItems = await this.prisma.cartItem.findMany({
+      where: { userId },
+      include: { product: true },
+    });
+    if (!cartItems.length)
+      throw new BadRequestException('购物车是空的，无法下单');
+
+    // 2. 计算总价
+    const totalPrice = cartItems.reduce(
+      (sum, item) => sum + Number(item.product.price) * item.quantity,
+      0,
+    );
+
+    // 3. 🔒 开启事务：创建订单 + 清空购物车，要么全成功，要么全回滚
+    const newOrder = await this.prisma.$transaction(async (tx) => {
+      // 3a. 在事务中创建订单（⚠️ 用 tx 而不是 this.prisma）
+      const order = await tx.order.create({
+        data: {
+          totalPrice: totalPrice,
+          userId: userId,
+          items: {
+            create: cartItems.map((item) => ({
+              product: { connect: { id: item.productId } },
+              quantity: item.quantity,
+              price: Number(item.product.price),
+            })),
+          },
+        },
+      });
+
+      // 3b. 在事务中清空购物车（⚠️ 用 tx 而不是 this.prisma）
+      await tx.cartItem.deleteMany({
+        where: { userId: userId },
+      });
+
+      // 返回创建好的订单
+      return order;
+    });
+
+    return {
+      message: '下单成功！',
+      orderId: newOrder.id,
+      totalPrice: newOrder.totalPrice,
+    };
+  }
+}
+```
+
+#### 关键变化解读
+
+| 改造前                               | 改造后                                |
+| ------------------------------------ | ------------------------------------- |
+| `this.prisma.order.create(...)`      | `tx.order.create(...)`                |
+| `this.cartService.clearCart(userId)` | `tx.cartItem.deleteMany(...)`         |
+| 两步操作各自独立，可能只成功一半     | 包在 `$transaction` 里，原子性保证    |
+| 依赖 CartService（跨模块调用）       | 直接在事务中操作，不再需要 CartModule |
+
+**最核心的一点**：事务回调里的 `tx` 参数，就是 Prisma 给你的"事务专用客户端"。回调里所有数据库操作都必须用 `tx`，不能用 `this.prisma`。只有用 `tx` 执行的操作才会被事务管理。
+
+#### 第二步：清理模块依赖
+
+清空购物车直接写在事务里了，不再需要调用 `CartService.clearCart()`，所以 `OrdersModule` 不再需要导入 `CartModule`：
+
+```typescript
+// orders.module.ts（改造后）
+@Module({
+  // 不再需要 imports: [CartModule]
+  controllers: [OrdersController],
+  providers: [OrdersService],
+})
+export class OrdersModule {}
+```
+
+> 💡 **为什么不在事务里调用 `CartService.clearCart()`？** 因为 `clearCart()` 用的是 `this.prisma`（普通客户端），不是事务客户端 `tx`。通过 service 调用的操作不在事务管控范围内，回滚时不会被撤销。
+
+#### Prisma 事务方法速查
+
+```typescript
+// 方式一：交互式事务（推荐，适合复杂逻辑）
+await this.prisma.$transaction(async (tx) => {
+  const a = await tx.order.create({ ... });
+  await tx.cartItem.deleteMany({ ... });
+  return a;
+});
+
+// 方式二：批量事务（适合简单的多条独立操作）
+await this.prisma.$transaction([
+  this.prisma.order.create({ ... }),
+  this.prisma.cartItem.deleteMany({ ... }),
+]);
+```
+
+| 方式           | 适用场景                       | 特点                 |
+| -------------- | ------------------------------ | -------------------- |
+| 交互式（回调） | 有逻辑判断、需要用前一步的结果 | 灵活，可以写 if/else |
+| 批量（数组）   | 多条独立操作，不需要互相依赖   | 简洁，但不能有逻辑   |
