@@ -271,3 +271,9 @@ this.prisma.product.findMany({
 | `{ OR: [{...}, {...}] }`         | 或       | `... OR ...`           |
 
 > 💡 **记忆口诀**：增用 `create`，删用 `delete`，改用 `update`，查用 `find`。操作多条加 `Many`，条件写在 `where` 里，数据写在 `data` 里。
+
+npx prisma studio 通过网页查看数据库所存储内容
+然后我们去修改数据库蓝图，去shcema.prisma中加上购物车这张表
+加完以后，在终端输入以下命令，让数据库建立新表
+npx prisma migrate dev --name add_cart_item
+建立新表以后，输入npx prisma generate获取最新的代码提示

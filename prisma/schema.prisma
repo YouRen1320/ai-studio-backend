@@ -23,11 +23,22 @@ datasource db {
 // @@index([name]) 给name字段加索引，如果商品有几十万个，加了索引，搜索名字速度会变得非常快
 
 // 唯一标识找id。想要自增autoincrement 不想重复加@unique，默认数值用@default 可有可无带个？ 时间更新使用@updateAt
+// 商品表
 model Product {
-  id          Int      @id @default(autoincrement()) //自动增长的主键ID，主键是表中每一行记录的唯一标识符
+  id          Int        @id @default(autoincrement()) //自动增长的主键ID，主键是表中每一行记录的唯一标识符
   name        String //商品名称
   price       Decimal //商品价格
   description String? //商品描述(可选)
-  createdAt   DateTime @default(now()) //创建时间，自动生成
-  updatedAt   DateTime @updatedAt //更新时间，自动生成。每当你修改这个字段，会自动生成更新时间，默认的更新时间与createdAt一致 当你第一次插入数据时，数据库会同时生成这两个时间，所以它们几乎一模一样
+  createdAt   DateTime   @default(now()) //创建时间，自动生成
+  updatedAt   DateTime   @updatedAt //更新时间，自动生成。每当你修改这个字段，会自动生成更新时间，默认的更新时间与createdAt一致 当你第一次插入数据时，数据库会同时生成这两个时间，所以它们几乎一模一样
+  cartItems   CartItem[] //告诉prisma，一个商品可以出现在多个购物车条目中（一对多关系）
+}
+
+// 购物车条目表
+model CartItem {
+  id        Int     @id @default(autoincrement()) // 自动增长的购物车id
+  quantity  Int //购买数量
+  // 建立关联
+  productId Int // 1.存一个数字，代表商品Id(这就是外键)
+  product   Product @relation(fields: [productId], references: [id]) // 告诉prisma，这个product对应product表里面的id
 }
