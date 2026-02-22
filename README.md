@@ -983,3 +983,204 @@ curl -X POST http://localhost:3000/cart \
         ↓
       返回"只属于该用户"的数据
 ```
+
+### 十三、统一接口返回格式（拦截器与过滤器）
+
+在真实的团队协作中，前端最怕的就是后端返回的数据格式"随心所欲"。为了让未来的前端（Vue）开发不需要写一堆 `if/else` 来判断数据结构，后端必须制定一个铁律：**所有返回数据都装进统一的"包装盒"**。
+
+#### 目标格式
+
+```json
+// ✅ 成功时
+{
+  "code": 200,
+  "message": "请求成功",
+  "data": { "items": [...], "totalPrice": 100 }
+}
+
+// ❌ 失败时
+{
+  "code": 401,
+  "message": "Token 无效或已过期，请重新登录！",
+  "data": null
+}
+```
+
+前端只需要判断 `code === 200`，永远不用猜结构。
+
+#### 核心概念：拦截器 vs 过滤器
+
+| 角色                              | 处理什么   | 比喻                                       |
+| --------------------------------- | ---------- | ------------------------------------------ |
+| **拦截器 (Interceptor)**          | 成功的响应 | 快递打包员，把货物装进统一的快递盒         |
+| **异常过滤器 (Exception Filter)** | 抛出的异常 | 售后客服，把投诉信息也装进统一格式的回执单 |
+
+#### 第一步：创建"快递打包员"（成功响应拦截器）
+
+新建 `src/common/interceptors/transform.interceptor.ts`：
+
+```typescript
+import {
+  CallHandler,
+  ExecutionContext,
+  Injectable,
+  NestInterceptor,
+} from '@nestjs/common';
+import { Observable, map } from 'rxjs';
+
+// 定义统一的返回格式接口
+interface ResponseFormat<T> {
+  code: number;
+  message: string;
+  data: T;
+}
+
+@Injectable()
+export class TransformInterceptor<T> implements NestInterceptor<
+  T,
+  ResponseFormat<T>
+> {
+  intercept(
+    context: ExecutionContext,
+    next: CallHandler,
+  ): Observable<ResponseFormat<T>> {
+    // next.handle() 执行真正的 Controller 方法
+    // pipe(map(...)) 在 Controller 返回数据之后，把数据"包装"一层
+    return next.handle().pipe(
+      map((data) => ({
+        code: 200,
+        message: '请求成功',
+        data: data, // Controller 返回的原始数据
+      })),
+    );
+  }
+}
+```
+
+**关键点：**
+
+- `NestInterceptor` 是 NestJS 拦截器的接口
+- `next.handle()` 会执行 Controller 方法，返回一个 RxJS `Observable`
+- `pipe(map(...))` 是 RxJS 的操作符，在数据流出时对数据做转换
+- 这样 Controller 里的代码完全不需要改动，返回什么数据都会自动被包装
+
+#### 第二步：创建"售后客服"（异常过滤器）
+
+新建 `src/common/filters/http-exception.filter.ts`：
+
+```typescript
+import {
+  ArgumentsHost,
+  Catch,
+  ExceptionFilter,
+  HttpException,
+} from '@nestjs/common';
+import { Response } from 'express';
+
+@Catch(HttpException) // 只要有 HttpException 被抛出，都交给我处理
+export class HttpExceptionFilter implements ExceptionFilter {
+  catch(exception: HttpException, host: ArgumentsHost) {
+    const ctx = host.switchToHttp();
+    const response = ctx.getResponse<Response>();
+    const status = exception.getStatus();
+
+    // 获取 NestJS 原始的错误信息
+    const exceptionResponse = exception.getResponse();
+
+    // 错误信息可能是字符串，也可能是对象（比如 ValidationPipe 返回的数组）
+    let message: string;
+    if (typeof exceptionResponse === 'string') {
+      message = exceptionResponse;
+    } else if (typeof exceptionResponse === 'object') {
+      const res = exceptionResponse as Record<string, unknown>;
+      message = Array.isArray(res.message)
+        ? res.message.join('; ') // 多条验证错误用分号拼接
+        : (res.message as string) || '请求失败';
+    } else {
+      message = '请求失败';
+    }
+
+    // 统一返回格式
+    response.status(status).json({
+      code: status,
+      message: message,
+      data: null,
+    });
+  }
+}
+```
+
+**为什么要特别处理 `message`？**
+
+因为 NestJS 的 `ValidationPipe` 验证失败时，返回的错误信息是一个**数组**，比如 `["商品名称不能为空", "价格必须为数字"]`。我们把它用分号拼接成一个字符串，前端展示更友好。
+
+#### 第三步：注册到全局（main.ts）
+
+```typescript
+import { TransformInterceptor } from './common/interceptors/transform.interceptor';
+import { HttpExceptionFilter } from './common/filters/http-exception.filter';
+
+async function bootstrap() {
+  const app = await NestFactory.create(AppModule);
+
+  app.useGlobalPipes(new ValidationPipe({ whitelist: true }));
+
+  // 注册全局拦截器：成功响应自动包装
+  app.useGlobalInterceptors(new TransformInterceptor());
+
+  // 注册全局异常过滤器：错误响应自动包装
+  app.useGlobalFilters(new HttpExceptionFilter());
+
+  await app.listen(process.env.PORT ?? 3000);
+}
+```
+
+> 💡 **注册顺序**：`Pipes → Interceptors → Filters`。管道先验证数据，拦截器包装成功响应，过滤器兜底处理异常。
+
+#### 第四步：效果对比
+
+**获取购物车（成功）：**
+
+```json
+// 之前
+{ "items": [...], "totalPrice": 100 }
+
+// 之后 ✅
+{ "code": 200, "message": "请求成功", "data": { "items": [...], "totalPrice": 100 } }
+```
+
+**未登录访问（401 错误）：**
+
+```json
+// 之前
+{ "message": "你还没有登录，请先登录获取 Token！", "error": "Unauthorized", "statusCode": 401 }
+
+// 之后 ✅
+{ "code": 401, "message": "你还没有登录，请先登录获取 Token！", "data": null }
+```
+
+**参数验证失败（400 错误）：**
+
+```json
+// 之前
+{ "message": ["商品id必须是整数", "商品数量最小为1"], "error": "Bad Request", "statusCode": 400 }
+
+// 之后 ✅
+{ "code": 400, "message": "商品id必须是整数; 商品数量最小为1", "data": null }
+```
+
+#### 完整的请求处理链路
+
+```
+用户请求
+  ↓
+Pipes (数据验证) → 验证失败? → ExceptionFilter 包装错误
+  ↓ 验证通过
+Guards (身份认证) → 认证失败? → ExceptionFilter 包装错误
+  ↓ 认证通过
+Controller → Service → 返回数据
+  ↓
+Interceptor 包装成功响应 → { code: 200, message: "请求成功", data: ... }
+```
+
+> 💡 **前端福利**：有了统一格式后，Vue 前端可以写一个通用的 Axios 拦截器，所有接口只需要判断 `res.data.code === 200`，极大简化前端错误处理逻辑。
