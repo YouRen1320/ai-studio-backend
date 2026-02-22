@@ -42,6 +42,7 @@ model Product {
   description String? //商品描述(可选)
   imageUrl    String? //商品图片地址(可选)
   isActive    Boolean     @default(true) //是否上架（软删除标记，false = 已下架）
+  stock       Int         @default(100) //商品库存（默认100件）
   createdAt   DateTime    @default(now()) //创建时间，自动生成
   updatedAt   DateTime    @updatedAt //更新时间，自动生成。每当你修改这个字段，会自动生成更新时间，默认的更新时间与createdAt一致 当你第一次插入数据时，数据库会同时生成这两个时间，所以它们几乎一模一样
   cartItems   CartItem[] //告诉prisma，一个商品可以出现在多个购物车条目中（一对多关系）
@@ -60,10 +61,18 @@ model CartItem {
   user   User @relation(fields: [userId], references: [id])
 }
 
+// 订单状态枚举
+enum OrderStatus {
+  PENDING // 待付款（会锁库存）
+  PAID // 已付款
+  CANCELLED // 已取消（超时未付，释放库存）
+}
+
 // 订单主表
 model Order {
   id         Int         @id @default(autoincrement())
   totalPrice Float //订单总金额
+  status     OrderStatus @default(PENDING) // 订单状态，默认待付款
   createdAt  DateTime    @default(now()) //下单时间
   // 建立关联：一个订单包含多个订单明细
   items      OrderItem[]

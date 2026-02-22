@@ -9,10 +9,12 @@ import { UsersModule } from './users/users.module';
 import { AuthModule } from './auth/auth.module';
 import { ConfigModule } from '@nestjs/config';
 import { RedisModule } from './redis.module'; // Redis 缓存模块
+import { ScheduleModule } from '@nestjs/schedule'; // 定时任务模块
 
 @Module({
   imports: [
     ConfigModule.forRoot({ isGlobal: true }),
+    ScheduleModule.forRoot(), // 启用定时任务
     RedisModule, // 注册 Redis 缓存（全局可用）
     ProductsModule,
     CartModule,

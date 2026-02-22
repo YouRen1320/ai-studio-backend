@@ -2298,3 +2298,99 @@ export class RedisModule {}
 
 - 👻 **缓存穿透 (Cache Penetration)**：黑客知道你有个查询接口，于是故意一直制造一个完全不存在恶意关键词（比如 `keyword=1k1hjasd713h21nj`）并疯狂发请求查询。因为这个商品不在数据库里，所以 Redis 里面当然也不会有缓存；因此黑客所有的恶意查询最后都会直击数据库，导致数据库负荷瘫痪。也就是说你的 Redis 大门被黑客当空气直接**穿过**了。
   - **怎么防范**：把这些哪怕是查不到的结果，你也把他们存进 Redis 缓存。记录该词的值为空！这样下次同样访问不存在的关键字，你直接丢个空给黑客就可以了，免去了访问数据库。
+
+### 二十二、定时任务与自动状态流转 (Task Scheduling)
+
+**痛点场景**：现在的订单生成就完事了。但在真实的电商里，如果用户下了单却不付钱，这件商品就会一直被他“占着库存”。别人想买都买不到！
+
+**解决方案**：利用 NestJS 自带的 `@nestjs/schedule` 写一个“后台机器人”，每分钟巡逻一次数据库。发现超过 15 分钟还没付款的订单，自动把它改成 `CANCELLED`（已取消），并在数据库里把这件商品的库存加回来！
+
+#### 1. 数据库改造
+
+在 `schema.prisma` 中新增枚举表示状态，跟商品表新增 `stock` 表示真实库存：
+
+```prisma
+enum OrderStatus {
+  PENDING   // 待付款（会锁库存）
+  PAID      // 已付款
+  CANCELLED // 已取消（超时未付，释放库存）
+}
+
+model Product {
+  // ... 其他字段
+  stock     Int @default(100)
+}
+
+model Order {
+  // ... 其他字段
+  status OrderStatus @default(PENDING)
+}
+```
+
+运行迁移 `npx prisma migrate dev`。
+
+#### 2. 配置与开启定时调度
+
+安装依赖：
+
+```bash
+pnpm add @nestjs/schedule
+```
+
+在主模块 `app.module.ts` 开启定时任务引擎：`ScheduleModule.forRoot()`。
+
+#### 3. 业务代码实现
+
+在 `orders.service.ts` 中，我们实现了两大功能：
+
+1. **下订单时扣减库存**：创建订单除了清理购物车，现在还会同时执行 `stock: { decrement: item.quantity }` 扣减商品库存的操作（如果在买东西的时候库存不够则拒绝下单）。
+2. **编写巡逻机器人**：给一个普通的方法上加持一个带有**Cron表达式**的装饰器 `@Cron()`，它变成了一个无时不刻运行在后台的机器人。
+
+```typescript
+import { Cron, CronExpression } from '@nestjs/schedule';
+
+@Injectable()
+export class OrdersService {
+  // ... 其他代码
+
+  // 🤖 机器人巡逻：每分钟执行一次
+  @Cron(CronExpression.EVERY_MINUTE)
+  async cancelUnpaidOrders() {
+    this.logger.log('🕵️‍♂️ 开始巡逻：检查是否有超时未支付的订单...');
+
+    // 1. 找到所有 状态为 PENDING 且 创建时间在 15分钟前 的订单
+    const fifteenMinutesAgo = new Date(Date.now() - 15 * 60 * 1000);
+    const expiredOrders = await this.prisma.order.findMany({
+      where: { status: 'PENDING', createdAt: { lt: fifteenMinutesAgo } },
+      include: { items: true },
+    });
+
+    if (expiredOrders.length === 0) return;
+
+    // 2. 依次取消这些超时订单并归还库存
+    for (const order of expiredOrders) {
+      await this.prisma.$transaction(async (tx) => {
+        // a. 把订单状态改成 CANCELLED
+        await tx.order.update({
+          where: { id: order.id },
+          data: { status: 'CANCELLED' },
+        });
+
+        // b. 把里面每个商品数量加回它的 stock 中！
+        for (const item of order.items) {
+          await tx.product.update({
+            where: { id: item.productId },
+            data: { stock: { increment: item.quantity } }, // increment 原子自增
+          });
+        }
+      });
+      this.logger.log(`❌ 订单 #${order.id} 超时已取消，库存已归还。`);
+    }
+  }
+}
+```
+
+#### 重要概念：Cron 表达式
+
+我们使用的是 NestJS 提供的便携枚举 `CronExpression.EVERY_MINUTE`（每分钟执行一次）。实际上它背后使用的是 Linux 中标准的 **Cron 表达式**：`* * * * * *`。
+你可以根据需要定制成各种规律，比如说 “每周一早上 8:30 执行”，这在业务开发中极为常见！（例如报表统计、邮件群发、会员检查）。
