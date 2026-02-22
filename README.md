@@ -547,3 +547,5 @@ export class OrdersModule {}
 **Prisma 工作流口诀：**
 
 > 改蓝图（schema）→ 跑迁移（migrate）→ 生类型（generate）→ 写代码（service）
+
+<!-- 至此，基本的增删改查，连表查询，依赖注入全部掌握 -->
