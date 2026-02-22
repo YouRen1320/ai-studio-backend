@@ -913,24 +913,104 @@ export class OrdersController {
 
 #### 第三步：Service 层也要配合改造
 
-**购物车 Service** —— `getCart()` 加上 `userId` 过滤：
+光在 Controller 门口站保安还不够，Service 层的查询逻辑也必须加上用户过滤，否则"进了门以后还是能看到别人的东西"。
+
+**购物车 Service 改造（`cart.service.ts`）：**
+
+一共要改 3 个方法，核心就是每个数据库操作都带上 `userId`：
 
 ```typescript
+// ① addToCart：接受 userId 参数，查找和创建时都要限制到当前用户
+async addToCart(item: createCartDto, userId: number) {
+  // 查找购物车是否已有该商品时，加上用户限制
+  const existingItem = await this.prisma.cartItem.findFirst({
+    where: {
+      productId: item.productId,
+      userId: userId, // 🔒 只在当前用户的购物车里找
+    },
+  });
+
+  if (existingItem) {
+    // 有就更新数量
+    await this.prisma.cartItem.update({ ... });
+  } else {
+    // 没有就新建，打上用户的钢印
+    await this.prisma.cartItem.create({
+      data: {
+        productId: item.productId,
+        quantity: item.quantity,
+        userId: userId, // 🔒 新建记录关联到当前用户
+      },
+    });
+  }
+}
+
+// ② getCart：只查当前用户的购物车
 async getCart(userId: number) {
   const cartItems = await this.prisma.cartItem.findMany({
-    where: { userId }, // 只查当前用户的购物车
+    where: { userId: userId }, // 🔒 只查当前用户的
     include: { product: true },
   });
   // ... 格式化和计算总价的逻辑不变
 }
+
+// ③ clearCart：只清空当前用户的购物车，不影响别人
+async clearCart(userId: number) {
+  await this.prisma.cartItem.deleteMany({
+    where: { userId: userId }, // 🔒 只删当前用户的
+  });
+}
 ```
 
-**订单 Service** —— `findAll()` 加上 `userId` 过滤：
+**订单 Service 改造（`orders.service.ts`）：**
+
+订单部的改造更加关键——它是"钱"的地方，必须滴水不漏：
 
 ```typescript
+// ① createOrder：整个下单流程都锁定到当前用户
+async createOrder(userId: number) {
+  // 1. 只从"当前用户"的购物车里取商品
+  const cartItems = await this.prisma.cartItem.findMany({
+    where: { userId }, // 🔒 只拿这个用户的购物车
+    include: { product: true },
+  });
+  if (!cartItems.length)
+    throw new BadRequestException('购物车是空的，无法下单');
+
+  // 2. 计算总价
+  const totalPrice = cartItems.reduce(
+    (sum, item) => sum + Number(item.product.price) * item.quantity, 0,
+  );
+
+  // 3. 创建订单时，关联到当前用户
+  const newOrder = await this.prisma.order.create({
+    data: {
+      totalPrice: totalPrice,
+      userId: userId, // 🔒 这个订单属于谁
+      items: {
+        create: cartItems.map((item) => ({
+          product: { connect: { id: item.productId } },
+          quantity: item.quantity,
+          price: Number(item.product.price),
+        })),
+      },
+    },
+  });
+
+  // 4. 只清空"当前用户"的购物车，不动别人的
+  await this.cartService.clearCart(userId); // 🔒 传入 userId
+
+  return {
+    message: '下单成功！',
+    orderId: newOrder.id,
+    totalPrice: newOrder.totalPrice,
+  };
+}
+
+// ② findAll：只查当前用户的历史订单
 async findAll(userId: number) {
   return this.prisma.order.findMany({
-    where: { userId }, // 只查当前用户的订单
+    where: { userId }, // 🔒 只查当前用户的订单
     include: {
       items: { include: { product: true } },
     },
@@ -938,6 +1018,18 @@ async findAll(userId: number) {
   });
 }
 ```
+
+**改造前后对比总结：**
+
+| 方法                  | 改造前                           | 改造后                                |
+| --------------------- | -------------------------------- | ------------------------------------- |
+| `addToCart(item)`     | 不区分用户，所有人共用一个购物车 | `addToCart(item, userId)`，按用户隔离 |
+| `getCart()`           | 查所有人的购物车                 | `getCart(userId)`，只查自己的         |
+| `clearCart()`         | 清空整张表！所有人的购物车都没了 | `clearCart(userId)`，只清自己的       |
+| `createOrder(userId)` | 查所有人的购物车来下单           | 只从自己的购物车取商品                |
+| `findAll()`           | 查所有人的订单                   | `findAll(userId)`，只查自己的         |
+
+> 💡 **核心原则**：每一次数据库操作的 `where` 条件里，都必须带上 `userId`。这就像去银行取钱，你只能操作**自己名下的账户**。
 
 #### 第四步：测试"门禁系统"
 
@@ -964,6 +1056,19 @@ curl -X POST http://localhost:3000/cart \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer eyJhbGciOi..." \
   -d '{"productId": 1, "quantity": 2}'
+
+# ✅ 带 Token 提交订单（userId 自动从 Token 获取）
+curl -X POST http://localhost:3000/orders \
+  -H "Authorization: Bearer eyJhbGciOi..."
+# 返回: { "message": "下单成功！", "orderId": 1, "totalPrice": 200 }
+
+# ✅ 带 Token 查看历史订单（只返回自己的订单）
+curl http://localhost:3000/orders \
+  -H "Authorization: Bearer eyJhbGciOi..."
+
+# ❌ 不带 Token 访问订单 → 一样被拦截
+curl http://localhost:3000/orders
+# 返回: { "message": "你还没有登录，请先登录获取 Token！", "statusCode": 401 }
 ```
 
 > 💡 **注意**：在 Postman 中测试时，在 `Headers` 选项卡中添加 `Authorization` 头，值为 `Bearer <你的token>`。
