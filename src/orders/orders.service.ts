@@ -16,12 +16,14 @@ export class OrdersService {
   ) {}
 
   // 创建订单
-  async createOrder() {
+  async createOrder(userId: number) {
     // 1.去数据库里面把购物车当前的条目和对应的商品信息全拿出来
     const cartItems = await this.prisma.cartItem.findMany({
+      where: { userId }, // 只查这个用户的购物车
       include: { product: true },
     });
-    if (!cartItems) throw new BadRequestException('购物车是空的，无法下单');
+    if (!cartItems.length)
+      throw new BadRequestException('购物车是空的，无法下单');
 
     // 2.计算这笔订单总价
     const totalPrice = cartItems.reduce(
@@ -34,6 +36,7 @@ export class OrdersService {
     const newOrder = await this.prisma.order.create({
       data: {
         totalPrice: totalPrice,
+        userId: userId, // 关联到用户
         // 直接在创建订单的同时，创建明细
         items: {
           create: cartItems.map((item) => ({

@@ -48,6 +48,7 @@ export class CartService {
         data: {
           productId: item.productId,
           quantity: item.quantity,
+          userId: item.userId,
         },
       });
     }

@@ -549,3 +549,21 @@ export class OrdersModule {}
 > 改蓝图（schema）→ 跑迁移（migrate）→ 生类型（generate）→ 写代码（service）
 
 <!-- 至此，基本的增删改查，连表查询，依赖注入全部掌握 -->
+打开 prisma/schema.prisma，我们要增加 User 表，并把它和 CartItem、Order 关联起来。
+由于我们给 CartItem 和 Order 表加上了必填的 userId，但你数据库里以前存的老数据并没有 userId，这会导致冲突。
+
+在终端运行：npx prisma migrate dev --name add_user_model
+
+业界绝对禁止把用户的密码（如 123456）直接存进数据库。万一数据库被黑客脱库，所有人的密码就全裸奔了。
+我们要用一种叫 Hash (哈希) 的单向加密算法，把密码变成一堆不可逆的乱码。最常用的工具是 bcrypt。
+pnpm add bcrypt
+pnpm add -D @types/bcrypt
+
+创建“用户部”
+nest g resource users
+选择 REST API，不生成 CRUD (n)
+在 src/users 下新建 dto/create-user.dto.ts
+
+打开 src/users/users.service.ts，这是我们要使用密码加密的地方
+打开 src/users/users.controller.ts： 开放注册接口 (UsersController)
+重启服务器 (pnpm start:dev)。完毕

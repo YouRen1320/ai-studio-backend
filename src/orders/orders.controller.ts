@@ -1,4 +1,4 @@
-import { Controller, Get, Post } from '@nestjs/common';
+import { Body, Controller, Get, Post } from '@nestjs/common';
 import { OrdersService } from './orders.service';
 
 @Controller('orders')
@@ -7,8 +7,8 @@ export class OrdersController {
 
   // 提交订单
   @Post()
-  create() {
-    return this.ordersService.createOrder();
+  create(@Body('userId') userId: number) {
+    return this.ordersService.createOrder(userId);
   }
 
   // 查看历史订单

@@ -5,9 +5,10 @@ import { ProductsModule } from './products/products.module'; // 刚刚我们使�
 import { CartModule } from './cart/cart.module';
 import { OrdersModule } from './orders/orders.module';
 import { PrismaModule } from './prisma.module';
+import { UsersModule } from './users/users.module';
 
 @Module({
-  imports: [ProductsModule, CartModule, OrdersModule, PrismaModule], // 导入产品模块
+  imports: [ProductsModule, CartModule, OrdersModule, PrismaModule, UsersModule], // 导入产品模块
   controllers: [AppController], //这个是app.module.ts的控制器
   providers: [AppService], //这个是app.module.ts的服务
 })
