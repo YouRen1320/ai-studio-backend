@@ -567,3 +567,44 @@ nest g resource users
 打开 src/users/users.service.ts，这是我们要使用密码加密的地方
 打开 src/users/users.controller.ts： 开放注册接口 (UsersController)
 重启服务器 (pnpm start:dev)。完毕
+
+现在，我们成功实现了用户的安全创建。但问题来了：
+用户注册了，他怎么证明自己是谁呢？ 总不能每次买东西都带上账号密码吧？
+下一关，我们要学习目前互联网最流行的认证方式：登录颁发 JWT (JSON Web Token) 与路由守卫
+什么是 JWT？(一个通俗的比喻)
+想象你去住酒店：
+
+登录：你拿着身份证（账号密码）去前台证明你是谁。
+
+颁发 JWT：前台核对无误后，不会让你每次开门都出示身份证，而是给你一张房卡 (Token)。
+
+携带 JWT：这张房卡里记录了你的房间号和退房时间。接下来你在这个酒店里去健身房、吃自助餐、开房门，只需要刷这张房卡就行了。
+
+第一步：准备“制卡机” (安装依赖)
+我们需要让 NestJS 具备生成和解析 JWT 的能力。
+请在终端输入：pnpm add @nestjs/jwt
+
+第二步：创建“安保部” (Auth 模块)
+虽然用户相关的逻辑在 UsersModule 里，但为了让代码更规范，“登录颁发令牌”和“验证令牌”这种安保工作，通常会单独成立一个 AuthModule。
+nest g resource auth
+
+第三步：给“用户部”增加一个找人的方法
+登录的第一步是去数据库里看这个用户存不存在。
+打开 src/users/users.service.ts，在最下面增加一个根据用户名找人的方法
+并且，我们需要允许“安保部”调用“用户部”的这个方法。
+打开 src/users/users.module.ts，把 UsersService 暴露出去
+
+第四步：配置“安保部”的制卡机
+我们需要在 AuthModule 里注册制卡机（JWT）。
+打开 src/auth/auth.module.ts，修改
+
+第五步：编写登录与发卡逻辑 (AuthService)
+现在，重头戏来了。前台拿到用户的账号密码，要怎么处理？
+打开 src/auth/auth.service.ts：
+
+第六步：开放登录接口 (AuthController)
+打开 src/auth/auth.controller.ts：
+
+第七步：见证奇迹时刻
+确保你的服务器正在运行（如果改了 .module.ts 最好重启一下 pnpm start:dev）。
+打开浏览器控制台，我们来模拟用户登录（注意，这里的账号密码必须是你上一节课注册过的）：

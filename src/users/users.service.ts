@@ -42,4 +42,11 @@ export class UsersService {
       },
     };
   }
+
+  // 根据用户名查询用户
+  async findOneByUsername(username: string) {
+    return this.prisma.user.findUnique({
+      where: { username },
+    });
+  }
 }
