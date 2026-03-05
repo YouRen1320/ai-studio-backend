@@ -10,6 +10,7 @@ import { AuthModule } from './auth/auth.module';
 import { ConfigModule } from '@nestjs/config';
 import { RedisModule } from './redis.module'; // Redis 缓存模块
 import { ScheduleModule } from '@nestjs/schedule'; // 定时任务模块
+import { AgentModule } from './agent/agent.module';
 
 @Module({
   imports: [
@@ -22,6 +23,7 @@ import { ScheduleModule } from '@nestjs/schedule'; // 定时任务模块
     PrismaModule,
     UsersModule,
     AuthModule,
+    AgentModule,
   ], // 导入产品模块
   controllers: [AppController], //这个是app.module.ts的控制器
   providers: [AppService], //这个是app.module.ts的服务

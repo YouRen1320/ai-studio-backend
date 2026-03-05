@@ -18,6 +18,11 @@ async function bootstrap() {
     prefix: '/uploads/', // 访问前缀，如 http://localhost:3000/uploads/xxx.jpg
   });
 
+  // 挂载刚刚移入的动漫图片目录，使其可通过 HTTP 访问
+  app.useStaticAssets(join(process.cwd(), 'public'), {
+    prefix: '/public/', // 例如 http://localhost:3000/public/images/psc_1.jpeg
+  });
+
   // 开启全局验证管道
   app.useGlobalPipes(
     new ValidationPipe({
