@@ -39,8 +39,8 @@ async function bootstrap() {
 
   // ========== Swagger 接口文档配置 ==========
   const config = new DocumentBuilder()
-    .setTitle('购物城 API') // 文档标题
-    .setDescription('仿京东购物城后端接口文档') // 文档描述
+    .setTitle('AI Studio 实验 API') // 文档标题
+    .setDescription('Gemini 关键词提取与本地图库匹配实验接口') // 文档描述
     .setVersion('1.0') // 版本号
     .addBearerAuth() // 添加 Bearer Token 认证（右上角会出现 Authorize 按钮）
     .build();
@@ -50,4 +50,5 @@ async function bootstrap() {
 
   await app.listen(process.env.PORT ?? 3000);
 }
-bootstrap();
+// 显式标记入口 Promise；启动失败仍由 Nest 输出并以非零状态退出。
+void bootstrap();
