@@ -23,16 +23,19 @@ export class AgentService {
    */
   async chat(message: string, userId: number, overrideSessionId?: string) {
     const sessionId = overrideSessionId || randomUUID();
-    let chatSession = this.sessions.get(sessionId);
+    // 会话键绑定已鉴权用户，避免另一个用户复用已知 conversationId 读取上下文。
+    const sessionKey = `${userId}:${sessionId}`;
+    let chatSession = this.sessions.get(sessionKey);
 
     // 如果还没有建立会话，或者过期的 ID，重新创建一个 ChatSession
     if (!chatSession) {
       chatSession = this.gemini.startChat();
-      this.sessions.set(sessionId, chatSession);
+      this.sessions.set(sessionKey, chatSession);
     }
 
+    // 只记录排障所需元数据，避免把用户原文和身份标识写入日志。
     this.logger.log(
-      `\n=== 🧑‍💻 [用户 ID:${userId}] 发起请求 ===\n💬 消息：${message}`,
+      `收到对话请求：字符数=${message.length}，新会话=${!overrideSessionId}`,
     );
 
     try {
@@ -46,22 +49,23 @@ export class AgentService {
       while (fCalls && fCalls.length > 0) {
         const functionCalls = fCalls || [];
         // 支持模型在一个回答周期里调用多个 Tools
-        const toolResponses: any[] = [];
+        const toolResponses: Array<{
+          functionResponse: {
+            name: string;
+            response: Record<string, unknown>;
+          };
+        }> = [];
 
         for (const call of functionCalls) {
           const fnName = call.name;
-          const fnArgs = call.args || {};
+          const fnArgs = (call.args || {}) as Record<string, unknown>;
 
-          this.logger.debug(
-            `🤖 模型决定调用工具: [${fnName}] 参数: ${JSON.stringify(fnArgs)}`,
-          );
+          this.logger.debug(`模型调用工具：${fnName}`);
 
           // 核心执行：映射调起后端原本就有的业务函数
-          const apiResult = await this.executeTool(fnName, fnArgs, userId);
+          const apiResult = await this.executeTool(fnName, fnArgs);
 
-          this.logger.debug(
-            `🔙 业务函数返回值返回给大模型: ${JSON.stringify(apiResult).substring(0, 100)}...`,
-          );
+          this.logger.debug(`工具执行完成：${fnName}`);
 
           // 打包模型想要的工具响应结果
           toolResponses.push({
@@ -81,15 +85,17 @@ export class AgentService {
 
       // 跳出循环，意味着当前所有的操作都已经成功完成，这时候必定有大模型的 Text 文字汇总建议
       const reply = responseResult.response.text();
-      this.logger.log(`\n=== 🤖 AI 最终回复 ===\n${reply}\n`);
+      this.logger.log(`模型回复完成：字符数=${reply.length}`);
 
       return {
         reply,
         conversationId: sessionId,
       };
-    } catch (e) {
-      this.logger.error('Gemini 处理通信发生异常:', e);
-      throw e;
+    } catch (error: unknown) {
+      const errorMessage =
+        error instanceof Error ? error.message : '未知通信错误';
+      this.logger.error(`Gemini 通信异常：${errorMessage}`);
+      throw error;
     }
   }
 
@@ -98,24 +104,29 @@ export class AgentService {
    */
   private async executeTool(
     name: string,
-    args: Record<string, any>,
-    userId: number,
-  ): Promise<any> {
+    args: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
     try {
       switch (name) {
-        case 'generate_anime_image':
-          return await this.animeSvc.generateAnimeImage(
-            args.prompt || '默认风格',
-            args.keywords || [],
-          );
+        case 'generate_anime_image': {
+          const prompt =
+            typeof args.prompt === 'string' ? args.prompt : '默认风格';
+          const keywords = Array.isArray(args.keywords)
+            ? args.keywords.filter(
+                (keyword): keyword is string => typeof keyword === 'string',
+              )
+            : [];
+          return await this.animeSvc.generateAnimeImage(prompt, keywords);
+        }
 
         default:
           this.logger.warn(`未知功能的 Tool 调用请求: ${name}`);
           return { error: '抱歉，对应的操作不存在或暂时不可用' };
       }
-    } catch (error: any) {
-      this.logger.error(`工具 [${name}] 执行异常: ${error?.message}`);
-      return { error: `操作遭遇失败：${error?.message}` };
+    } catch (error: unknown) {
+      const errorMessage = error instanceof Error ? error.message : '未知错误';
+      this.logger.error(`工具 [${name}] 执行异常：${errorMessage}`);
+      return { error: '操作失败，请稍后重试' };
     }
   }
 }

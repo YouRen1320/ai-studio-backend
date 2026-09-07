@@ -104,13 +104,12 @@ export class AnimeService {
 
     // 2. 如果没有任何词库匹配上，我们进入 Fallback 回退逻辑：随机抽取目前图库里未在特征库登记的一张图
     if (maxScore <= 0 || !bestMatchFilename) {
-      this.logger.debug(`未精准命中词汇 (Prompt: ${prompt})，随机发货。`);
+      // 不记录用户原文；这里只保留是否命中的运行状态。
+      this.logger.debug('本地图库未命中标签，使用随机回退。');
       const randomIndex = Math.floor(Math.random() * this.cachedImages.length);
       bestMatchFilename = this.cachedImages[randomIndex];
     } else {
-      this.logger.debug(
-        `【命中图库】得分: ${maxScore}, Keywords: ${keywords.join(', ')}, 选图: ${bestMatchFilename}`,
-      );
+      this.logger.debug(`本地图库命中：得分=${maxScore}`);
     }
 
     // 3. 拼接结果
@@ -119,7 +118,7 @@ export class AnimeService {
     const imageUrl = `${HOST}/public/images/${encodeURIComponent(bestMatchFilename)}`;
 
     return Promise.resolve({
-      message: `这是根据您的要求生成的二次元图片：`,
+      message: `这是根据你的描述从本地图库匹配的图片：`,
       url: imageUrl,
     });
   }
