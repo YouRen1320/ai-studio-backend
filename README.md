@@ -27,7 +27,7 @@ src/
 ## 🚀 快速启动
 
 1. **环境准备**
-   请确保你已安装 `Node.js (v18+)` 及包管理工具 `pnpm`。
+   请使用 Node.js 22.12+（22.x）或 24+ 及包管理工具 `pnpm`；当前 Prisma 7 依赖不支持 Node.js 18。
 
 2. **配置环境变量**
    复制示例后替换本地开发值：
@@ -67,6 +67,21 @@ pnpm start:dev
 - `pnpm format`: 代码格式化
 - `pnpm lint`: 代码静态质量诊断
 - `pnpm test`: 单元测试
+
+## 单元测试与构建验证
+
+首次安装后先生成 Prisma Client；此步骤只根据本地 schema 生成代码，不运行数据库迁移：
+
+```bash
+pnpm exec prisma generate
+pnpm exec jest --runInBand
+pnpm build
+```
+
+单元测试使用 Nest 依赖替身，不需要启动 PostgreSQL、Redis 或配置 Gemini Key。
+覆盖商品缓存与分页、购物车用户范围与金额、空购物车和库存不足拒绝下单、注册密码哈希、
+登录令牌签发边界以及 Agent 会话隔离。控制器直接调用测试不代表 HTTP 守卫、参数校验或上传拦截器已通过端到端验收。
+订单事务测试验证服务对事务客户端的调用，不验证真实数据库回滚、并发库存竞争或支付流程。
 
 ---
 
