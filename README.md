@@ -38,11 +38,15 @@ cp .env.example .env
 
 `.env` 已被 Git 忽略。不要把 Gemini Key、JWT Secret、数据库口令或用户对话提交到仓库、Issue、日志和截图。
 
-3. **依赖安装**
+3. **依赖安装与 Prisma Client 生成**
 
 ```bash
 pnpm install
+pnpm exec prisma generate
 ```
+
+> [!IMPORTANT]
+> Prisma 7 不再在安装时自动生成客户端，`prisma generate` 是必需步骤；跳过它服务与测试都会报 `Cannot find module '.prisma/client'`。本仓库的 `pnpm-workspace.yaml` 已允许 prisma/engines/bcrypt 执行安装脚本，`pnpm install` 无需额外批准。
 
 4. **启动服务**
 
@@ -87,4 +91,4 @@ pnpm build
 
 ## 许可证
 
-当前仓库未声明开源许可证。在补充许可证前，默认不授予复制、修改或再发布权限。
+本项目以 [MIT](./LICENSE) 许可证发布。
